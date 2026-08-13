@@ -1,0 +1,55 @@
+version: "3"
+
+vars:
+  LINTER_VER: "v2.12.2"
+
+  GOMODCACHE:
+    sh: go env GOMODCACHE
+
+  GOCACHE:
+    sh: go env GOCACHE
+
+  PWD_DIR:
+    sh: pwd
+
+env:
+  GOWORK: "off"
+
+tasks:
+  run:
+    desc: "Run all checks"
+    cmds:
+      - task: lint
+      - task: test-race
+
+  lint:
+    desc: "Run golangci-lint"
+    cmds:
+      - task: _run-linter
+
+  test:
+    desc: "Run tests"
+    cmds:
+      - go test -v -count=1 ./...
+
+  test-race:
+    desc: "Run tests with the race detector"
+    cmds:
+      - go test -race -v -count=1 ./...
+
+  _run-linter:
+    internal: true
+    cmds:
+      - >
+        docker run --rm
+        -u $(id -u):$(id -g)
+        -v {{.PWD_DIR}}:/app
+        -v {{.GOMODCACHE}}:/go/pkg/mod
+        -v {{.GOCACHE}}:/go/build-cache
+        -e GOMODCACHE=/go/pkg/mod
+        -e GOCACHE=/go/build-cache
+        -e GOLANGCI_LINT_CACHE=/go/build-cache/golangci-lint
+        -e GOWORK=off
+        -w /app
+        golangci/golangci-lint:{{.LINTER_VER}}
+        golangci-lint run --timeout 5m
