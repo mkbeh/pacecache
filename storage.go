@@ -198,9 +198,9 @@ func (segment *storageSegment[V]) getLocked(
 		return zero, false
 	}
 
-	// TTL controls logical validity. Expired entries are removed lazily when
-	// accessed; there is no background or opportunistic expiration sweep.
-	if !now.Before(item.expiresAt) {
+	// TTL controls logical validity. Once an entry expires, it is no longer
+	// considered valid and is removed when observed.
+	if !item.expiresAt.IsZero() && !now.Before(item.expiresAt) {
 		segment.removeLocked(item)
 
 		if stats != nil {

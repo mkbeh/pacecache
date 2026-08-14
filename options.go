@@ -92,13 +92,14 @@ func WithSegmentCount(count int) Option {
 	}
 }
 
-// WithTTL configures the lifetime of positive cache entries.
+// WithTTL configures the default lifetime of positive cache entries.
 //
-// Cache entries use absolute expiration. Cache hits do not extend TTL.
+// A positive TTL enables time-based expiration. NoExpiration disables
+// time-based expiration for positive entries using the default expiration.
 func WithTTL(ttl time.Duration) Option {
 	return func(settings *cacheSettings) error {
-		if ttl <= 0 {
-			return errors.New("ttl must be positive")
+		if ttl <= 0 && ttl != NoExpiration {
+			return errors.New("ttl must be positive or NoExpiration")
 		}
 
 		settings.ttl = ttl
@@ -155,7 +156,7 @@ func (settings *cacheSettings) validate() error {
 		return errors.New("cache name must not be blank")
 	}
 
-	if settings.ttl > maxDuration-settings.jitter {
+	if settings.ttl > 0 && settings.ttl > maxDuration-settings.jitter {
 		return errors.New("ttl plus jitter exceeds maximum duration")
 	}
 

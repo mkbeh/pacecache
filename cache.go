@@ -13,6 +13,14 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+const (
+	// DefaultExpiration uses the cache's configured positive TTL.
+	DefaultExpiration time.Duration = 0
+
+	// NoExpiration disables time-based expiration for the entry.
+	NoExpiration time.Duration = -1
+)
+
 // Cache is a bounded in-process read-through cache for values of type V.
 //
 // Cache uses segmented exact LRU eviction and absolute TTL expiration.
@@ -123,9 +131,7 @@ func (cache *Cache[V]) Close() {
 // entry exists for key.
 //
 // Expired entries are treated as misses and removed lazily.
-func (cache *Cache[V]) Get(
-	key string,
-) (V, LookupStatus) {
+func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	var zero V
 
 	if !cache.initialized() {
@@ -264,6 +270,48 @@ func (cache *Cache[V]) GetOrLoad(
 
 		return loaded.value, loaded.found, nil
 	}
+}
+
+// Set stores a positive value in the cache.
+//
+// DefaultExpiration uses the cache's configured positive TTL. A positive
+// expiration overrides the configured TTL for this entry. A negative
+// expiration disables time-based expiration.
+//
+// Set acts as a publication barrier: loads registered before Set may still
+// return to callers already waiting for them, but cannot overwrite the
+// explicitly stored value afterward.
+func (cache *Cache[V]) Set(
+	key string,
+	value V,
+	expiration time.Duration,
+) {
+	if !cache.initialized() {
+		return
+	}
+
+	index := cache.store.segmentIndex(key)
+	state := &cache.states[index]
+
+	state.mu.Lock()
+
+	state.generation++
+	state.group.Forget(key)
+
+	now := time.Now()
+
+	cache.store.setAt(
+		index,
+		key,
+		cachedValue[V]{
+			value: value,
+			found: true,
+		},
+		cache.expirationTime(now, expiration),
+		cache.stats.shard(index),
+	)
+
+	state.mu.Unlock()
 }
 
 // Invalidate removes the specified keys from the cache.
@@ -438,7 +486,7 @@ func (cache *Cache[V]) storeLoaded(
 				value: loaded.value,
 				found: true,
 			},
-			now.Add(cache.effectiveTTL()),
+			cache.expirationTime(now, DefaultExpiration),
 			cache.stats.shard(index),
 		)
 
@@ -455,13 +503,32 @@ func (cache *Cache[V]) storeLoaded(
 	}
 }
 
-func (cache *Cache[V]) effectiveTTL() time.Duration {
-	if cache.jitter == 0 {
-		return cache.ttl
+func (cache *Cache[V]) expirationTime(now time.Time, expiration time.Duration) time.Time {
+	ttl := expiration
+
+	if ttl == DefaultExpiration {
+		ttl = cache.ttl
 	}
 
-	return cache.ttl + time.Duration(
-		rand.Int64N(int64(cache.jitter)),
+	if ttl < 0 {
+		return time.Time{}
+	}
+
+	return now.Add(cache.effectiveTTL(ttl))
+}
+
+func (cache *Cache[V]) effectiveTTL(ttl time.Duration) time.Duration {
+	if cache.jitter == 0 {
+		return ttl
+	}
+
+	jitterLimit := min(cache.jitter, maxDuration-ttl)
+	if jitterLimit <= 0 {
+		return ttl
+	}
+
+	return ttl + time.Duration(
+		rand.Int64N(int64(jitterLimit)),
 	)
 }
 
