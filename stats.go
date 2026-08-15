@@ -14,8 +14,8 @@ type Stats struct {
 	// Current state.
 
 	// EntryCount is the number of entries currently resident in storage.
-	// Because expiration is lazy, this count may include expired entries that
-	// have not been accessed or evicted yet.
+	// Expired entries may remain resident until they are observed, evicted,
+	// invalidated, or removed by manual or background cleanup.
 	EntryCount int64
 
 	// MaxEntries is the configured total entry budget after applying defaults.
@@ -69,8 +69,8 @@ type Stats struct {
 	// InvalidatedAllCount is the cumulative number of resident entries removed by
 	// InvalidateAll.
 	//
-	// Because expiration is lazy, this may include physically resident entries
-	// whose TTL had already expired but which had not yet been accessed.
+	// This may include physically resident entries whose TTL had already expired
+	// but which had not yet been removed.
 	InvalidatedAllCount int64
 
 	// Storage lifecycle.
@@ -79,8 +79,8 @@ type Stats struct {
 	// storage segment reached capacity.
 	EvictionCount int64
 
-	// ExpirationCount is the cumulative number of expired entries removed
-	// lazily while looking up a key.
+	// ExpirationCount is the cumulative number of entries removed because their
+	// TTL expired, either lazily during lookup or by manual or background cleanup.
 	ExpirationCount int64
 }
 

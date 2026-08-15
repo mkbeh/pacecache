@@ -35,6 +35,8 @@ type Cache[V any] struct {
 	states []cacheState
 	stats  *statsCollector
 
+	cleanup *cleanupWorker[V]
+
 	metrics   MetricsRegistration
 	closeOnce sync.Once
 
@@ -65,18 +67,21 @@ type invalidationTarget struct {
 // Name is used by diagnostics and metrics and must not be blank.
 //
 // Unless overridden by options, New uses production-oriented defaults for
-// capacity, segmentation, and positive TTL. Negative caching and metrics are
-// disabled by default.
+// capacity, segmentation, and positive TTL. Negative caching, metrics, and
+// background cleanup are disabled by default.
 //
-// If metrics are configured, Close must be called to release the associated
-// metrics registration.
+// If metrics or background cleanup are configured, Close must be called to
+// release the associated resources.
 func New[V any](name string, options ...Option) (*Cache[V], error) {
 	settings, err := newCacheSettings(name, options...)
 	if err != nil {
 		return nil, fmt.Errorf("pacecache: %w", err)
 	}
 
-	store := newStorage[V](settings.maxEntries, settings.segmentCount)
+	store := newStorage[V](
+		settings.maxEntries,
+		settings.segmentCount,
+	)
 
 	cache := &Cache[V]{
 		name: settings.name,
@@ -94,6 +99,15 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 		return nil, fmt.Errorf("pacecache: register metrics: %w", err)
 	}
 
+	if settings.cleanupInterval > 0 {
+		cache.cleanup = newCleanupWorker(
+			cache.store,
+			cache.stats,
+			settings.cleanupInterval,
+		)
+		cache.cleanup.start()
+	}
+
 	return cache, nil
 }
 
@@ -106,10 +120,15 @@ func (cache *Cache[V]) Name() string {
 	return cache.name
 }
 
-// Close releases resources associated with the cache. Close is idempotent.
+// Close releases background resources associated with the cache. Close is
+// idempotent.
 //
-// If metrics are configured, Close releases their registration. Cache contents
-// are not cleared.
+// If background cleanup is configured, Close stops it and waits for the cleaner
+// goroutine to exit. If metrics are configured, Close also releases their
+// registration.
+//
+// Close does not clear or disable the cache. Cache operations remain available,
+// but stopped background resources are not restarted.
 func (cache *Cache[V]) Close() {
 	if cache == nil {
 		return
@@ -117,6 +136,10 @@ func (cache *Cache[V]) Close() {
 
 	cache.closeOnce.Do(
 		func() {
+			if cache.cleanup != nil {
+				cache.cleanup.close()
+			}
+
 			if cache.metrics != nil {
 				cache.metrics.Close()
 			}
@@ -130,7 +153,8 @@ func (cache *Cache[V]) Close() {
 // returned for a cached not-found result. LookupMiss is returned when no live
 // entry exists for key.
 //
-// Expired entries are treated as misses and removed lazily.
+// Expired entries are always treated as misses. They are removed when observed,
+// by CleanupExpired, or by background cleanup when it is enabled.
 func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	var zero V
 
@@ -141,7 +165,7 @@ func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	index := cache.store.segmentIndex(key)
 	stats := cache.stats.shard(index)
 
-	cached, ok := cache.store.lookupAt(index, key, time.Now(), stats)
+	cached, ok := cache.store.lookupAt(index, key, cache.store.now(), stats)
 	if !ok {
 		return zero, LookupMiss
 	}
@@ -151,6 +175,25 @@ func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	}
 
 	return cached.value, LookupHit
+}
+
+// CleanupExpired physically removes expired entries using the cache expiration
+// index and returns the number of entries removed.
+//
+// CleanupExpired is always available; background cleanup does not need to be
+// enabled. Logical expiration is independent of physical cleanup: an expired
+// entry is never returned even if it has not yet been reclaimed. Nearby
+// expiration deadlines are grouped internally, so physical reclamation may
+// trail the exact TTL deadline by a small bounded interval.
+func (cache *Cache[V]) CleanupExpired() int64 {
+	if !cache.initialized() {
+		return 0
+	}
+
+	return cache.store.cleanupExpired(
+		cache.store.now(),
+		cache.stats,
+	)
 }
 
 // GetOrLoad returns the cached result for key or obtains it from loader.
@@ -177,6 +220,10 @@ func (cache *Cache[V]) GetOrLoad(
 		return zero, false, errors.New("pacecache: cache is not initialized")
 	}
 
+	if ctx == nil {
+		return zero, false, errors.New("pacecache: context is nil")
+	}
+
 	if loader == nil {
 		return zero, false, errors.New("pacecache: loader is nil")
 	}
@@ -184,7 +231,7 @@ func (cache *Cache[V]) GetOrLoad(
 	index := cache.store.segmentIndex(key)
 	stats := cache.stats.shard(index)
 
-	if cached, ok := cache.store.lookupAt(index, key, time.Now(), stats); ok {
+	if cached, ok := cache.store.lookupAt(index, key, cache.store.now(), stats); ok {
 		return cached.value, cached.found, nil
 	}
 
@@ -203,7 +250,7 @@ func (cache *Cache[V]) GetOrLoad(
 		func() (any, error) {
 			// Another caller may have populated the cache between the initial
 			// lookup and this call becoming the singleflight owner.
-			if cached, ok := cache.store.getAt(index, key, time.Now(), cache.stats.shard(index)); ok {
+			if cached, ok := cache.store.getAt(index, key, cache.store.now(), cache.stats.shard(index)); ok {
 				return loadResult[V](cached), nil
 			}
 
@@ -239,7 +286,7 @@ func (cache *Cache[V]) GetOrLoad(
 			publishState.mu.RLock()
 
 			if publishState.generation == generation {
-				cache.storeLoaded(index, key, loaded, finishedAt)
+				cache.storeLoaded(index, key, loaded, cache.store.elapsedAt(finishedAt))
 			}
 
 			publishState.mu.RUnlock()
@@ -298,7 +345,7 @@ func (cache *Cache[V]) Set(
 	state.generation++
 	state.group.Forget(key)
 
-	now := time.Now()
+	now := cache.store.now()
 
 	cache.store.setAt(
 		index,
@@ -307,7 +354,7 @@ func (cache *Cache[V]) Set(
 			value: value,
 			found: true,
 		},
-		cache.expirationTime(now, expiration),
+		cache.expirationDeadline(now, expiration),
 		cache.stats.shard(index),
 	)
 
@@ -424,8 +471,8 @@ func (cache *Cache[V]) Invalidate(keys ...string) {
 // before the barrier may still complete for callers already waiting for them,
 // but they cannot repopulate the cache afterward.
 //
-// Because expiration is lazy, the removed entries may include physically
-// resident entries whose TTL has already expired.
+// The removed entries may include physically resident entries whose TTL has
+// already expired but which have not yet been removed.
 //
 // InvalidateAll is a no-op on an uninitialized Cache.
 func (cache *Cache[V]) InvalidateAll() {
@@ -475,7 +522,7 @@ func (cache *Cache[V]) storeLoaded(
 	index int,
 	key string,
 	loaded loadResult[V],
-	now time.Time,
+	now int64,
 ) {
 	switch {
 	case loaded.found:
@@ -486,7 +533,7 @@ func (cache *Cache[V]) storeLoaded(
 				value: loaded.value,
 				found: true,
 			},
-			cache.expirationTime(now, DefaultExpiration),
+			cache.expirationDeadline(now, DefaultExpiration),
 			cache.stats.shard(index),
 		)
 
@@ -497,13 +544,16 @@ func (cache *Cache[V]) storeLoaded(
 			cachedValue[V]{
 				found: false,
 			},
-			now.Add(cache.negativeTTL),
+			deadlineAfter(now, cache.negativeTTL),
 			cache.stats.shard(index),
 		)
 	}
 }
 
-func (cache *Cache[V]) expirationTime(now time.Time, expiration time.Duration) time.Time {
+func (cache *Cache[V]) expirationDeadline(
+	now int64,
+	expiration time.Duration,
+) int64 {
 	ttl := expiration
 
 	if ttl == DefaultExpiration {
@@ -511,10 +561,24 @@ func (cache *Cache[V]) expirationTime(now time.Time, expiration time.Duration) t
 	}
 
 	if ttl < 0 {
-		return time.Time{}
+		return 0
 	}
 
-	return now.Add(cache.effectiveTTL(ttl))
+	return deadlineAfter(now, cache.effectiveTTL(ttl))
+}
+
+func deadlineAfter(now int64, ttl time.Duration) int64 {
+	delta := int64(ttl)
+	if delta <= 0 {
+		return 0
+	}
+
+	maxDeadline := int64(maxDuration)
+	if now >= maxDeadline-delta {
+		return maxDeadline
+	}
+
+	return now + delta
 }
 
 func (cache *Cache[V]) effectiveTTL(ttl time.Duration) time.Duration {
@@ -537,7 +601,11 @@ func (cache *Cache[V]) registerMetrics(metrics Metrics) error {
 		return nil
 	}
 
-	registration, err := metrics.RegisterCache(cache)
+	registration, err := metrics.RegisterCache(
+		cacheStatsProvider[V]{
+			cache: cache,
+		},
+	)
 	if err != nil {
 		return err
 	}

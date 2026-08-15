@@ -2,6 +2,7 @@ package pacecache
 
 import (
 	"hash/maphash"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -9,21 +10,32 @@ import (
 const defaultStorageSegmentCount = 32
 
 type entry[V any] struct {
-	key    string
-	cached cachedValue[V]
+	key string
 
-	expiresAt time.Time
+	value V
+	found bool
 
+	// deadline stores the absolute monotonic deadline in nanoseconds relative to
+	// storage.origin. Zero means that the entry does not expire.
+	deadline int64
+
+	// Exact LRU membership.
 	previous *entry[V]
 	next     *entry[V]
+
+	// Expiration bucket membership. These links are independent from the LRU
+	// list so expiration maintenance never needs another per-entry allocation.
+	expirationPrevious *entry[V]
+	expirationNext     *entry[V]
 }
 
 // storage routes keys across independent storage segments.
 //
-// Each segment owns its map, LRU list, and mutex. Segment capacities sum
-// exactly to MaxEntries.
+// Each segment owns its map, LRU list, expiration index, and mutex. Segment
+// capacities sum exactly to MaxEntries.
 type storage[V any] struct {
-	seed maphash.Seed
+	seed   maphash.Seed
+	origin time.Time
 
 	segments   []storageSegment[V]
 	mask       uint64
@@ -38,10 +50,24 @@ type storageSegment[V any] struct {
 	head *entry[V]
 	tail *entry[V]
 
+	expirations expirationIndex[V]
+
 	maxEntries int
 }
 
 func newStorage[V any](maxEntries, segmentCount int) *storage[V] {
+	return newStorageWithExpirationResolution[V](
+		maxEntries,
+		segmentCount,
+		defaultExpirationBucketResolution,
+	)
+}
+
+func newStorageWithExpirationResolution[V any](
+	maxEntries int,
+	segmentCount int,
+	resolution time.Duration,
+) *storage[V] {
 	if maxEntries == 0 {
 		maxEntries = defaultMaxEntries
 	}
@@ -50,7 +76,10 @@ func newStorage[V any](maxEntries, segmentCount int) *storage[V] {
 		segmentCount = defaultStorageSegmentCount
 	}
 
-	return newStorageWithSegments[V](maxEntries, segmentCount)
+	store := newStorageWithSegments[V](maxEntries, segmentCount)
+	store.enableExpirationIndex(resolution)
+
+	return store
 }
 
 func newStorageWithSegments[V any](maxEntries, segmentCount int) *storage[V] {
@@ -80,16 +109,74 @@ func newStorageWithSegments[V any](maxEntries, segmentCount int) *storage[V] {
 
 	return &storage[V]{
 		seed:       maphash.MakeSeed(),
+		origin:     time.Now(),
 		segments:   segments,
 		mask:       mask,
 		maxEntries: maxEntries,
 	}
 }
 
+func (storage *storage[V]) enableExpirationIndex(resolution time.Duration) {
+	if resolution <= 0 {
+		return
+	}
+
+	for index := range storage.segments {
+		storage.segments[index].expirations = newExpirationIndex[V](resolution)
+	}
+}
+
+// now returns monotonic nanoseconds elapsed since this storage was created.
+func (storage *storage[V]) now() int64 {
+	if storage == nil || storage.origin.IsZero() {
+		return 0
+	}
+
+	elapsed := time.Since(storage.origin)
+	if elapsed <= 0 {
+		return 0
+	}
+
+	return int64(elapsed)
+}
+
+// elapsedAt converts a time carrying the same monotonic clock domain into
+// storage-relative nanoseconds. It is primarily useful when a caller already
+// captured a time.Time for another purpose, such as loader duration metrics.
+func (storage *storage[V]) elapsedAt(now time.Time) int64 {
+	if storage == nil || storage.origin.IsZero() {
+		return 0
+	}
+
+	elapsed := now.Sub(storage.origin)
+	if elapsed <= 0 {
+		return 0
+	}
+
+	return int64(elapsed)
+}
+
+// deadlineAt converts an absolute time.Time to this storage's monotonic
+// deadline representation. A non-zero time at or before the storage origin is
+// represented by a negative deadline so it remains immediately expired rather
+// than being confused with NoExpiration.
+func (storage *storage[V]) deadlineAt(expiresAt time.Time) int64 {
+	if storage == nil || expiresAt.IsZero() {
+		return 0
+	}
+
+	deadline := expiresAt.Sub(storage.origin)
+	if deadline <= 0 {
+		return -1
+	}
+
+	return int64(deadline)
+}
+
 func (storage *storage[V]) lookupAt(
 	index int,
 	key string,
-	now time.Time,
+	now int64,
 	stats *statsShard,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].lookup(key, now, stats)
@@ -98,7 +185,7 @@ func (storage *storage[V]) lookupAt(
 func (storage *storage[V]) getAt(
 	index int,
 	key string,
-	now time.Time,
+	now int64,
 	stats *statsShard,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].get(key, now, stats)
@@ -108,10 +195,10 @@ func (storage *storage[V]) setAt(
 	index int,
 	key string,
 	value cachedValue[V],
-	expiresAt time.Time,
+	deadline int64,
 	stats *statsShard,
 ) {
-	storage.segments[index].set(key, value, expiresAt, stats)
+	storage.segments[index].set(key, value, deadline, stats)
 }
 
 func (storage *storage[V]) deleteAt(
@@ -129,6 +216,44 @@ func (storage *storage[V]) deleteAll() int64 {
 	}
 
 	return deleted
+}
+
+func (storage *storage[V]) cleanupExpiredAt(
+	index int,
+	now int64,
+	limit int,
+	stats *statsShard,
+) (int, bool) {
+	return storage.segments[index].cleanupExpired(now, limit, stats)
+}
+
+func (storage *storage[V]) cleanupExpired(
+	now int64,
+	stats *statsCollector,
+) int64 {
+	var removed int64
+
+	for {
+		more := false
+
+		for index := range storage.segments {
+			count, pending := storage.cleanupExpiredAt(
+				index,
+				now,
+				cleanupBatchSize,
+				stats.shard(index),
+			)
+
+			removed += int64(count)
+			more = more || pending
+		}
+
+		if !more {
+			return removed
+		}
+
+		runtime.Gosched()
+	}
 }
 
 func (storage *storage[V]) segmentIndex(key string) int {
@@ -149,7 +274,7 @@ func (storage *storage[V]) segmentIndex(key string) int {
 
 func (segment *storageSegment[V]) lookup(
 	key string,
-	now time.Time,
+	now int64,
 	stats *statsShard,
 ) (cachedValue[V], bool) {
 	segment.mu.Lock()
@@ -177,7 +302,7 @@ func (segment *storageSegment[V]) lookup(
 
 func (segment *storageSegment[V]) get(
 	key string,
-	now time.Time,
+	now int64,
 	stats *statsShard,
 ) (cachedValue[V], bool) {
 	segment.mu.Lock()
@@ -188,7 +313,7 @@ func (segment *storageSegment[V]) get(
 
 func (segment *storageSegment[V]) getLocked(
 	key string,
-	now time.Time,
+	now int64,
 	stats *statsShard,
 ) (cachedValue[V], bool) {
 	item, ok := segment.entries[key]
@@ -200,7 +325,7 @@ func (segment *storageSegment[V]) getLocked(
 
 	// TTL controls logical validity. Once an entry expires, it is no longer
 	// considered valid and is removed when observed.
-	if !item.expiresAt.IsZero() && !now.Before(item.expiresAt) {
+	if item.deadline != 0 && now >= item.deadline {
 		segment.removeLocked(item)
 
 		if stats != nil {
@@ -215,17 +340,20 @@ func (segment *storageSegment[V]) getLocked(
 	// A hit affects LRU recency but never extends the entry TTL.
 	segment.moveToFrontLocked(item)
 
-	return item.cached, true
+	return cachedValue[V]{
+		value: item.value,
+		found: item.found,
+	}, true
 }
 
 func (segment *storageSegment[V]) set(
 	key string,
 	value cachedValue[V],
-	expiresAt time.Time,
+	deadline int64,
 	stats *statsShard,
 ) {
-	// A zero-capacity segment is possible when the caller explicitly chooses
-	// more segments than MaxEntries. Such a segment simply stores nothing.
+	// A zero-capacity segment is possible for direct internal construction with
+	// more segments than entries. Such a segment simply stores nothing.
 	if segment.maxEntries == 0 {
 		return
 	}
@@ -234,8 +362,9 @@ func (segment *storageSegment[V]) set(
 	defer segment.mu.Unlock()
 
 	if item, ok := segment.entries[key]; ok {
-		item.cached = value
-		item.expiresAt = expiresAt
+		item.value = value.value
+		item.found = value.found
+		segment.expirations.update(item, deadline)
 
 		segment.moveToFrontLocked(item)
 
@@ -251,25 +380,28 @@ func (segment *storageSegment[V]) set(
 
 		item := segment.tail
 
+		segment.expirations.remove(item)
 		delete(segment.entries, item.key)
 
 		item.key = key
-		item.cached = value
-		item.expiresAt = expiresAt
+		item.value = value.value
+		item.found = value.found
+		item.deadline = 0
 
+		segment.expirations.update(item, deadline)
 		segment.entries[key] = item
-
 		segment.moveToFrontLocked(item)
 
 		return
 	}
 
 	item := &entry[V]{
-		key:       key,
-		cached:    value,
-		expiresAt: expiresAt,
+		key:   key,
+		value: value.value,
+		found: value.found,
 	}
 
+	segment.expirations.update(item, deadline)
 	segment.entries[key] = item
 	segment.pushFrontLocked(item)
 }
@@ -298,13 +430,50 @@ func (segment *storageSegment[V]) deleteAll() int64 {
 
 	segment.head = nil
 	segment.tail = nil
+	segment.expirations.reset()
 
 	return deleted
 }
 
-func (segment *storageSegment[V]) removeLocked(item *entry[V]) {
-	delete(segment.entries, item.key)
+func (segment *storageSegment[V]) cleanupExpired(
+	now int64,
+	limit int,
+	stats *statsShard,
+) (int, bool) {
+	if limit <= 0 || !segment.expirations.enabled() {
+		return 0, false
+	}
 
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	dueID := segment.expirations.dueBucketID(now)
+	removed := 0
+
+	for removed < limit &&
+		segment.expirations.rootDue(dueID) {
+		item := segment.expirations.popRootEntry()
+
+		current, ok := segment.entries[item.key]
+		if !ok || current != item {
+			panic("pacecache: expiration index is inconsistent with storage")
+		}
+
+		delete(segment.entries, item.key)
+		segment.unlinkLocked(item)
+		removed++
+
+		if stats != nil {
+			stats.expirationCount++
+		}
+	}
+
+	return removed, segment.expirations.rootDue(dueID)
+}
+
+func (segment *storageSegment[V]) removeLocked(item *entry[V]) {
+	segment.expirations.remove(item)
+	delete(segment.entries, item.key)
 	segment.unlinkLocked(item)
 }
 

@@ -23,9 +23,10 @@ type cacheSettings struct {
 	maxEntries   int
 	segmentCount int
 
-	ttl         time.Duration
-	jitter      time.Duration
-	negativeTTL time.Duration
+	ttl             time.Duration
+	jitter          time.Duration
+	negativeTTL     time.Duration
+	cleanupInterval time.Duration
 
 	metrics Metrics
 }
@@ -134,6 +135,30 @@ func WithNegativeTTL(ttl time.Duration) Option {
 		}
 
 		settings.negativeTTL = ttl
+
+		return nil
+	}
+}
+
+// WithCleanupInterval enables periodic background physical removal of expired
+// entries.
+//
+// The interval controls regular background cleanup wakeups. While expired
+// backlog remains, the cleaner may schedule bounded continuation work sooner.
+// The interval does not affect logical TTL precision or the internal
+// expiration bucket resolution.
+//
+// Background cleanup is disabled by default. Manual cleanup through
+// Cache.CleanupExpired is always available without this option. When
+// background cleanup is enabled, Close must be called to stop the cleaner
+// goroutine.
+func WithCleanupInterval(interval time.Duration) Option {
+	return func(settings *cacheSettings) error {
+		if interval <= 0 {
+			return errors.New("cleanup interval must be positive")
+		}
+
+		settings.cleanupInterval = interval
 
 		return nil
 	}
