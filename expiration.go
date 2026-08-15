@@ -17,7 +17,7 @@ type expirationIndex[V any] struct {
 	queue   expirationBucketHeap[V]
 
 	spare      [maxSpareExpirationBuckets]*expirationBucket[V]
-	spareCount uint8
+	spareCount int
 }
 
 type expirationBucket[V any] struct {
@@ -170,7 +170,6 @@ func (index *expirationIndex[V]) reset() {
 	index.queue = nil
 
 	for _, bucket := range active {
-		bucket.heapIndex = -1
 		index.releaseBucket(bucket)
 	}
 }
@@ -268,15 +267,11 @@ func (index *expirationIndex[V]) acquireBucket(id int64) *expirationBucket[V] {
 	}
 
 	index.spareCount--
-	position := int(index.spareCount)
+	position := index.spareCount
 	bucket := index.spare[position]
 	index.spare[position] = nil
 
 	bucket.id = id
-	bucket.heapIndex = -1
-	bucket.count = 0
-	bucket.head = nil
-	bucket.tail = nil
 
 	return bucket
 }
@@ -293,11 +288,11 @@ func (index *expirationIndex[V]) releaseBucket(bucket *expirationBucket[V]) {
 	bucket.head = nil
 	bucket.tail = nil
 
-	if index.spareCount >= uint8(len(index.spare)) {
+	if index.spareCount >= len(index.spare) {
 		return
 	}
 
-	position := int(index.spareCount)
+	position := index.spareCount
 	index.spare[position] = bucket
 	index.spareCount++
 }

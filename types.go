@@ -1,6 +1,9 @@
 package pacecache
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // LookupStatus describes the result of a local cache lookup.
 type LookupStatus uint8
@@ -34,4 +37,9 @@ type loadResult[V any] struct {
 type cachedValue[V any] struct {
 	value V
 	found bool
+
+	// refreshTTL stores the effective positive TTL used by sliding expiration.
+	// Any configured jitter has already been applied. Zero means that the entry
+	// must not be refreshed by sliding expiration.
+	refreshTTL time.Duration
 }

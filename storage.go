@@ -15,6 +15,12 @@ type entry[V any] struct {
 	value V
 	found bool
 
+	// refreshTTL stores the effective positive TTL used by sliding expiration.
+	// Any configured jitter is selected when the entry is stored and remains
+	// stable until the entry is overwritten. Zero means that the entry is not
+	// eligible for sliding expiration.
+	refreshTTL time.Duration
+
 	// deadline stores the absolute monotonic deadline in nanoseconds relative to
 	// storage.origin. Zero means that the entry does not expire.
 	deadline int64
@@ -51,6 +57,8 @@ type storageSegment[V any] struct {
 	tail *entry[V]
 
 	expirations expirationIndex[V]
+
+	slidingExpiration bool
 
 	maxEntries int
 }
@@ -126,34 +134,22 @@ func (storage *storage[V]) enableExpirationIndex(resolution time.Duration) {
 	}
 }
 
+func (storage *storage[V]) enableSlidingExpiration() {
+	for index := range storage.segments {
+		storage.segments[index].slidingExpiration = true
+	}
+}
+
 // now returns monotonic nanoseconds elapsed since this storage was created.
 func (storage *storage[V]) now() int64 {
-	if storage == nil || storage.origin.IsZero() {
-		return 0
-	}
-
-	elapsed := time.Since(storage.origin)
-	if elapsed <= 0 {
-		return 0
-	}
-
-	return int64(elapsed)
+	return int64(time.Since(storage.origin))
 }
 
 // elapsedAt converts a time carrying the same monotonic clock domain into
 // storage-relative nanoseconds. It is primarily useful when a caller already
 // captured a time.Time for another purpose, such as loader duration metrics.
 func (storage *storage[V]) elapsedAt(now time.Time) int64 {
-	if storage == nil || storage.origin.IsZero() {
-		return 0
-	}
-
-	elapsed := now.Sub(storage.origin)
-	if elapsed <= 0 {
-		return 0
-	}
-
-	return int64(elapsed)
+	return int64(now.Sub(storage.origin))
 }
 
 // deadlineAt converts an absolute time.Time to this storage's monotonic
@@ -337,7 +333,18 @@ func (segment *storageSegment[V]) getLocked(
 		return zero, false
 	}
 
-	// A hit affects LRU recency but never extends the entry TTL.
+	if segment.slidingExpiration && item.refreshTTL > 0 {
+		deadline := deadlineAfter(now, item.refreshTTL)
+
+		// A read may capture now before waiting for the segment lock. Never let a
+		// stale timestamp shorten a deadline established by a newer read or Set.
+		if deadline > item.deadline {
+			segment.expirations.update(item, deadline)
+		}
+	}
+
+	// A live hit always updates LRU recency. Sliding expiration, when enabled,
+	// refreshes positive expiring entries atomically under the same segment lock.
 	segment.moveToFrontLocked(item)
 
 	return cachedValue[V]{
@@ -361,9 +368,15 @@ func (segment *storageSegment[V]) set(
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
+	refreshTTL := value.refreshTTL
+	if !value.found || deadline == 0 {
+		refreshTTL = 0
+	}
+
 	if item, ok := segment.entries[key]; ok {
 		item.value = value.value
 		item.found = value.found
+		item.refreshTTL = refreshTTL
 		segment.expirations.update(item, deadline)
 
 		segment.moveToFrontLocked(item)
@@ -386,6 +399,7 @@ func (segment *storageSegment[V]) set(
 		item.key = key
 		item.value = value.value
 		item.found = value.found
+		item.refreshTTL = refreshTTL
 		item.deadline = 0
 
 		segment.expirations.update(item, deadline)
@@ -396,9 +410,10 @@ func (segment *storageSegment[V]) set(
 	}
 
 	item := &entry[V]{
-		key:   key,
-		value: value.value,
-		found: value.found,
+		key:        key,
+		value:      value.value,
+		found:      value.found,
+		refreshTTL: refreshTTL,
 	}
 
 	segment.expirations.update(item, deadline)

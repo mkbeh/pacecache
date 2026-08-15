@@ -9,13 +9,19 @@ const (
 	cleanupContinuationDelay = time.Millisecond
 )
 
+type cleanupConfig struct {
+	interval    time.Duration
+	batchSize   int
+	entryBudget int
+}
+
 type cleanupWorker[V any] struct {
 	store *storage[V]
 	stats *statsCollector
 
-	interval time.Duration
-	stop     chan struct{}
-	done     chan struct{}
+	config cleanupConfig
+	stop   chan struct{}
+	done   chan struct{}
 
 	active []int
 	cursor int
@@ -24,15 +30,15 @@ type cleanupWorker[V any] struct {
 func newCleanupWorker[V any](
 	store *storage[V],
 	stats *statsCollector,
-	interval time.Duration,
+	config cleanupConfig,
 ) *cleanupWorker[V] {
 	return &cleanupWorker[V]{
-		store:    store,
-		stats:    stats,
-		interval: interval,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
-		active:   make([]int, 0, len(store.segments)),
+		store:  store,
+		stats:  stats,
+		config: config,
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+		active: make([]int, 0, len(store.segments)),
 	}
 }
 
@@ -46,14 +52,14 @@ func (worker *cleanupWorker[V]) close() {
 }
 
 func (worker *cleanupWorker[V]) run() {
-	timer := time.NewTimer(worker.interval)
+	timer := time.NewTimer(worker.config.interval)
 	defer timer.Stop()
 	defer close(worker.done)
 
 	for {
 		select {
 		case <-timer.C:
-			next := worker.interval
+			next := worker.config.interval
 
 			if worker.cleanup(worker.store.now()) {
 				next = worker.continuationDelay()
@@ -79,7 +85,7 @@ func (worker *cleanupWorker[V]) cleanup(now int64) bool {
 	}
 
 	startedAt := time.Now()
-	remaining := cleanupEntryBudget
+	remaining := worker.config.entryBudget
 
 	active := worker.active[:0]
 	start := worker.cursor
@@ -97,7 +103,7 @@ func (worker *cleanupWorker[V]) cleanup(now int64) bool {
 		}
 
 		index := (start + offset) % segmentCount
-		limit := min(cleanupBatchSize, remaining)
+		limit := min(worker.config.batchSize, remaining)
 
 		removed, more := worker.store.cleanupExpiredAt(
 			index,
@@ -135,7 +141,7 @@ func (worker *cleanupWorker[V]) cleanup(now int64) bool {
 				return true
 			}
 
-			limit := min(cleanupBatchSize, remaining)
+			limit := min(worker.config.batchSize, remaining)
 
 			removed, more := worker.store.cleanupExpiredAt(
 				index,
@@ -161,7 +167,7 @@ func (worker *cleanupWorker[V]) cleanup(now int64) bool {
 }
 
 func (worker *cleanupWorker[V]) continuationDelay() time.Duration {
-	return min(worker.interval, cleanupContinuationDelay)
+	return min(worker.config.interval, cleanupContinuationDelay)
 }
 
 func cleanupBudgetExpired(startedAt time.Time) bool {

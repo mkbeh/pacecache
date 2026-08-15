@@ -23,10 +23,14 @@ type cacheSettings struct {
 	maxEntries   int
 	segmentCount int
 
-	ttl             time.Duration
-	jitter          time.Duration
-	negativeTTL     time.Duration
-	cleanupInterval time.Duration
+	ttl               time.Duration
+	jitter            time.Duration
+	negativeTTL       time.Duration
+	slidingExpiration bool
+
+	cleanupInterval    time.Duration
+	cleanupBatchSize   int
+	cleanupEntryBudget int
 
 	metrics Metrics
 }
@@ -54,9 +58,11 @@ func newCacheSettings(name string, options ...Option) (*cacheSettings, error) {
 
 func defaultCacheSettings() *cacheSettings {
 	return &cacheSettings{
-		maxEntries:   defaultMaxEntries,
-		segmentCount: defaultStorageSegmentCount,
-		ttl:          defaultTTL,
+		maxEntries:         defaultMaxEntries,
+		segmentCount:       defaultStorageSegmentCount,
+		ttl:                defaultTTL,
+		cleanupBatchSize:   cleanupBatchSize,
+		cleanupEntryBudget: cleanupEntryBudget,
 	}
 }
 
@@ -111,8 +117,10 @@ func WithTTL(ttl time.Duration) Option {
 
 // WithJitter configures random positive TTL spread.
 //
-// Jitter is added to positive entry TTL to reduce synchronized expiration.
-// Zero disables jitter.
+// Jitter is selected when a positive entry is stored to reduce synchronized
+// expiration. With sliding expiration, the resulting effective TTL is reused
+// on every refresh instead of selecting another jitter value. Zero disables
+// jitter.
 func WithJitter(jitter time.Duration) Option {
 	return func(settings *cacheSettings) error {
 		if jitter < 0 {
@@ -135,6 +143,22 @@ func WithNegativeTTL(ttl time.Duration) Option {
 		}
 
 		settings.negativeTTL = ttl
+
+		return nil
+	}
+}
+
+// WithSlidingExpiration refreshes the expiration deadline of live positive
+// entries whenever they are successfully read.
+//
+// Each entry is refreshed using the effective TTL selected when it was stored.
+// Entries using DefaultExpiration derive that TTL from the cache configuration,
+// while entries with an explicit positive TTL retain their own TTL. Configured
+// jitter is selected once when the entry is stored and reused by subsequent
+// refreshes. Negative entries and entries using NoExpiration are not refreshed.
+func WithSlidingExpiration() Option {
+	return func(settings *cacheSettings) error {
+		settings.slidingExpiration = true
 
 		return nil
 	}
@@ -164,6 +188,46 @@ func WithCleanupInterval(interval time.Duration) Option {
 	}
 }
 
+// WithCleanupBatchSize configures the maximum number of expired entries
+// removed from one storage segment in a single background cleanup batch.
+//
+// Larger batches can increase cleanup throughput but may hold a segment lock
+// for longer. Values larger than a segment or the remaining cleanup budget are
+// safe and are naturally limited by the available work. The default is 256.
+// This option has an effect only when background cleanup is enabled with
+// WithCleanupInterval.
+func WithCleanupBatchSize(size int) Option {
+	return func(settings *cacheSettings) error {
+		if size <= 0 {
+			return errors.New("cleanup batch size must be positive")
+		}
+
+		settings.cleanupBatchSize = size
+
+		return nil
+	}
+}
+
+// WithCleanupEntryBudget configures the maximum number of expired entries
+// removed during one background cleanup quantum.
+//
+// Larger budgets allow large expiration backlogs to be drained more
+// aggressively. Cleanup remains bounded by an internal time budget. Values
+// larger than the cache size are safe; the worker stops when no expired work
+// remains. The default is 16384. This option has an effect only when background
+// cleanup is enabled with WithCleanupInterval.
+func WithCleanupEntryBudget(entries int) Option {
+	return func(settings *cacheSettings) error {
+		if entries <= 0 {
+			return errors.New("cleanup entry budget must be positive")
+		}
+
+		settings.cleanupEntryBudget = entries
+
+		return nil
+	}
+}
+
 // WithMetrics configures optional cache metrics.
 //
 // The Metrics implementation may be reused by multiple caches. Its
@@ -177,8 +241,14 @@ func WithMetrics(metrics Metrics) Option {
 }
 
 func (settings *cacheSettings) validate() error {
-	if strings.TrimSpace(settings.name) == "" {
+	trimmedName := strings.TrimSpace(settings.name)
+
+	if trimmedName == "" {
 		return errors.New("cache name must not be blank")
+	}
+
+	if trimmedName != settings.name {
+		return errors.New("cache name must not contain surrounding whitespace")
 	}
 
 	if settings.ttl > 0 && settings.ttl > maxDuration-settings.jitter {

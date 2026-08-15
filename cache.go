@@ -23,11 +23,12 @@ const (
 
 // Cache is a bounded in-process read-through cache for values of type V.
 //
-// Cache uses segmented exact LRU eviction and absolute TTL expiration.
-// Positive and negative results may use different TTLs. Concurrent loads for
-// the same key are coalesced through singleflight.
+// Cache uses segmented exact LRU eviction and TTL expiration. Positive entries
+// may optionally use sliding expiration, while negative results always use
+// absolute expiration. Concurrent loads for the same key are coalesced through
+// singleflight.
 //
-// Cache is safe for concurrent use.
+// Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[V any] struct {
 	name string
 
@@ -82,6 +83,9 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 		settings.maxEntries,
 		settings.segmentCount,
 	)
+	if settings.slidingExpiration {
+		store.enableSlidingExpiration()
+	}
 
 	cache := &Cache[V]{
 		name: settings.name,
@@ -103,7 +107,11 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 		cache.cleanup = newCleanupWorker(
 			cache.store,
 			cache.stats,
-			settings.cleanupInterval,
+			cleanupConfig{
+				interval:    settings.cleanupInterval,
+				batchSize:   settings.cleanupBatchSize,
+				entryBudget: settings.cleanupEntryBudget,
+			},
 		)
 		cache.cleanup.start()
 	}
@@ -154,7 +162,9 @@ func (cache *Cache[V]) Close() {
 // entry exists for key.
 //
 // Expired entries are always treated as misses. They are removed when observed,
-// by CleanupExpired, or by background cleanup when it is enabled.
+// by CleanupExpired, or by background cleanup when it is enabled. When sliding
+// expiration is enabled, a live positive hit refreshes the entry using the TTL
+// with which it was stored.
 func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	var zero V
 
@@ -183,8 +193,9 @@ func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 // CleanupExpired is always available; background cleanup does not need to be
 // enabled. Logical expiration is independent of physical cleanup: an expired
 // entry is never returned even if it has not yet been reclaimed. Nearby
-// expiration deadlines are grouped internally, so physical reclamation may
-// trail the exact TTL deadline by a small bounded interval.
+// expiration deadlines are grouped internally. Bucket eligibility may trail
+// the exact TTL deadline by up to the internal bucket resolution; actual
+// physical reclamation also depends on when cleanup runs.
 func (cache *Cache[V]) CleanupExpired() int64 {
 	if !cache.initialized() {
 		return 0
@@ -250,8 +261,16 @@ func (cache *Cache[V]) GetOrLoad(
 		func() (any, error) {
 			// Another caller may have populated the cache between the initial
 			// lookup and this call becoming the singleflight owner.
-			if cached, ok := cache.store.getAt(index, key, cache.store.now(), cache.stats.shard(index)); ok {
-				return loadResult[V](cached), nil
+			if cached, ok := cache.store.getAt(
+				index,
+				key,
+				cache.store.now(),
+				stats,
+			); ok {
+				return loadResult[V]{
+					value: cached.value,
+					found: cached.found,
+				}, nil
 			}
 
 			startedAt := time.Now()
@@ -281,15 +300,13 @@ func (cache *Cache[V]) GetOrLoad(
 			// invalidation for this state segment. A pre-invalidation load may
 			// still return to callers that already joined it, but cannot
 			// repopulate the cache after the barrier.
-			publishState := &cache.states[index]
+			state.mu.RLock()
 
-			publishState.mu.RLock()
-
-			if publishState.generation == generation {
+			if state.generation == generation {
 				cache.storeLoaded(index, key, loaded, cache.store.elapsedAt(finishedAt))
 			}
 
-			publishState.mu.RUnlock()
+			state.mu.RUnlock()
 
 			return loaded, nil
 		},
@@ -345,17 +362,12 @@ func (cache *Cache[V]) Set(
 	state.generation++
 	state.group.Forget(key)
 
-	now := cache.store.now()
-
-	cache.store.setAt(
+	cache.storePositive(
 		index,
 		key,
-		cachedValue[V]{
-			value: value,
-			found: true,
-		},
-		cache.expirationDeadline(now, expiration),
-		cache.stats.shard(index),
+		value,
+		expiration,
+		cache.store.now(),
 	)
 
 	state.mu.Unlock()
@@ -518,6 +530,28 @@ func (cache *Cache[V]) invalidateOne(
 	return removed
 }
 
+func (cache *Cache[V]) storePositive(
+	index int,
+	key string,
+	value V,
+	expiration time.Duration,
+	now int64,
+) {
+	refreshTTL := cache.effectiveExpirationTTL(expiration)
+
+	cache.store.setAt(
+		index,
+		key,
+		cachedValue[V]{
+			value:      value,
+			found:      true,
+			refreshTTL: refreshTTL,
+		},
+		deadlineAfter(now, refreshTTL),
+		cache.stats.shard(index),
+	)
+}
+
 func (cache *Cache[V]) storeLoaded(
 	index int,
 	key string,
@@ -526,15 +560,12 @@ func (cache *Cache[V]) storeLoaded(
 ) {
 	switch {
 	case loaded.found:
-		cache.store.setAt(
+		cache.storePositive(
 			index,
 			key,
-			cachedValue[V]{
-				value: loaded.value,
-				found: true,
-			},
-			cache.expirationDeadline(now, DefaultExpiration),
-			cache.stats.shard(index),
+			loaded.value,
+			DefaultExpiration,
+			now,
 		)
 
 	case cache.negativeTTL > 0:
@@ -550,21 +581,20 @@ func (cache *Cache[V]) storeLoaded(
 	}
 }
 
-func (cache *Cache[V]) expirationDeadline(
-	now int64,
+func (cache *Cache[V]) effectiveExpirationTTL(
 	expiration time.Duration,
-) int64 {
+) time.Duration {
 	ttl := expiration
 
 	if ttl == DefaultExpiration {
 		ttl = cache.ttl
 	}
 
-	if ttl < 0 {
+	if ttl <= 0 {
 		return 0
 	}
 
-	return deadlineAfter(now, cache.effectiveTTL(ttl))
+	return jitteredTTL(ttl, cache.jitter)
 }
 
 func deadlineAfter(now int64, ttl time.Duration) int64 {
@@ -581,12 +611,15 @@ func deadlineAfter(now int64, ttl time.Duration) int64 {
 	return now + delta
 }
 
-func (cache *Cache[V]) effectiveTTL(ttl time.Duration) time.Duration {
-	if cache.jitter == 0 {
+func jitteredTTL(
+	ttl time.Duration,
+	jitter time.Duration,
+) time.Duration {
+	if jitter == 0 {
 		return ttl
 	}
 
-	jitterLimit := min(cache.jitter, maxDuration-ttl)
+	jitterLimit := min(jitter, maxDuration-ttl)
 	if jitterLimit <= 0 {
 		return ttl
 	}
