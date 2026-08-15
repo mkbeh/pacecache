@@ -105,12 +105,7 @@ func (worker *cleanupWorker[V]) cleanup(now int64) bool {
 		index := (start + offset) % segmentCount
 		limit := min(worker.config.batchSize, remaining)
 
-		removed, more := worker.store.cleanupExpiredAt(
-			index,
-			now,
-			limit,
-			worker.stats.shard(index),
-		)
+		removed, more := worker.store.cleanupExpiredAt(index, now, limit, worker.stats.shard(index))
 
 		remaining -= removed
 
@@ -143,12 +138,7 @@ func (worker *cleanupWorker[V]) cleanup(now int64) bool {
 
 			limit := min(worker.config.batchSize, remaining)
 
-			removed, more := worker.store.cleanupExpiredAt(
-				index,
-				now,
-				limit,
-				worker.stats.shard(index),
-			)
+			removed, more := worker.store.cleanupExpiredAt(index, now, limit, worker.stats.shard(index))
 
 			remaining -= removed
 

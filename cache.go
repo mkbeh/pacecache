@@ -82,10 +82,8 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 	store := newStorage[V](
 		settings.maxEntries,
 		settings.segmentCount,
+		settings.slidingExpiration,
 	)
-	if settings.slidingExpiration {
-		store.enableSlidingExpiration()
-	}
 
 	cache := &Cache[V]{
 		name: settings.name,
@@ -201,10 +199,7 @@ func (cache *Cache[V]) CleanupExpired() int64 {
 		return 0
 	}
 
-	return cache.store.cleanupExpired(
-		cache.store.now(),
-		cache.stats,
-	)
+	return cache.store.cleanupExpired(cache.store.now(), cache.stats)
 }
 
 // GetOrLoad returns the cached result for key or obtains it from loader.
@@ -261,12 +256,7 @@ func (cache *Cache[V]) GetOrLoad(
 		func() (any, error) {
 			// Another caller may have populated the cache between the initial
 			// lookup and this call becoming the singleflight owner.
-			if cached, ok := cache.store.getAt(
-				index,
-				key,
-				cache.store.now(),
-				stats,
-			); ok {
+			if cached, ok := cache.store.getAt(index, key, cache.store.now(), stats); ok {
 				return loadResult[V]{
 					value: cached.value,
 					found: cached.found,
@@ -362,13 +352,7 @@ func (cache *Cache[V]) Set(
 	state.generation++
 	state.group.Forget(key)
 
-	cache.storePositive(
-		index,
-		key,
-		value,
-		expiration,
-		cache.store.now(),
-	)
+	cache.storePositive(index, key, value, expiration, cache.store.now())
 
 	state.mu.Unlock()
 }
@@ -512,10 +496,7 @@ func (cache *Cache[V]) InvalidateAll() {
 	cache.stats.recordAllInvalidation(invalidated)
 }
 
-func (cache *Cache[V]) invalidateOne(
-	index int,
-	key string,
-) bool {
+func (cache *Cache[V]) invalidateOne(index int, key string) bool {
 	state := &cache.states[index]
 
 	state.mu.Lock()
@@ -560,13 +541,7 @@ func (cache *Cache[V]) storeLoaded(
 ) {
 	switch {
 	case loaded.found:
-		cache.storePositive(
-			index,
-			key,
-			loaded.value,
-			DefaultExpiration,
-			now,
-		)
+		cache.storePositive(index, key, loaded.value, DefaultExpiration, now)
 
 	case cache.negativeTTL > 0:
 		cache.store.setAt(
@@ -581,9 +556,7 @@ func (cache *Cache[V]) storeLoaded(
 	}
 }
 
-func (cache *Cache[V]) effectiveExpirationTTL(
-	expiration time.Duration,
-) time.Duration {
+func (cache *Cache[V]) effectiveExpirationTTL(expiration time.Duration) time.Duration {
 	ttl := expiration
 
 	if ttl == DefaultExpiration {
@@ -611,10 +584,7 @@ func deadlineAfter(now int64, ttl time.Duration) int64 {
 	return now + delta
 }
 
-func jitteredTTL(
-	ttl time.Duration,
-	jitter time.Duration,
-) time.Duration {
+func jitteredTTL(ttl time.Duration, jitter time.Duration) time.Duration {
 	if jitter == 0 {
 		return ttl
 	}

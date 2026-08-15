@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -241,14 +240,8 @@ func WithMetrics(metrics Metrics) Option {
 }
 
 func (settings *cacheSettings) validate() error {
-	trimmedName := strings.TrimSpace(settings.name)
-
-	if trimmedName == "" {
+	if settings.name == "" {
 		return errors.New("cache name must not be blank")
-	}
-
-	if trimmedName != settings.name {
-		return errors.New("cache name must not contain surrounding whitespace")
 	}
 
 	if settings.ttl > 0 && settings.ttl > maxDuration-settings.jitter {

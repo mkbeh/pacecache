@@ -63,12 +63,22 @@ type storageSegment[V any] struct {
 	maxEntries int
 }
 
-func newStorage[V any](maxEntries, segmentCount int) *storage[V] {
-	return newStorageWithExpirationResolution[V](
+func newStorage[V any](
+	maxEntries int,
+	segmentCount int,
+	slidingExpiration bool,
+) *storage[V] {
+	store := newStorageWithExpirationResolution[V](
 		maxEntries,
 		segmentCount,
 		defaultExpirationBucketResolution,
 	)
+
+	if slidingExpiration {
+		store.enableSlidingExpiration()
+	}
+
+	return store
 }
 
 func newStorageWithExpirationResolution[V any](
@@ -233,12 +243,7 @@ func (storage *storage[V]) cleanupExpired(
 		more := false
 
 		for index := range storage.segments {
-			count, pending := storage.cleanupExpiredAt(
-				index,
-				now,
-				cleanupBatchSize,
-				stats.shard(index),
-			)
+			count, pending := storage.cleanupExpiredAt(index, now, cleanupBatchSize, stats.shard(index))
 
 			removed += int64(count)
 			more = more || pending
