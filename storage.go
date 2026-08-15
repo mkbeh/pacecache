@@ -251,25 +251,42 @@ func (storage *storage[V]) cleanupExpiredAt(
 
 func (storage *storage[V]) cleanupExpired(
 	now int64,
+	policy cleanupPolicy,
 	stats *statsCollector,
 ) int64 {
 	var removed int64
 
+	remainingEntries := policy.entryBudget
+
 	for {
-		more := false
+		hasMore := false
 
 		for index := range storage.segments {
-			count, pending := storage.cleanupExpiredAt(index, now, defaultCleanupBatchSize, stats.segment(index))
+			if remainingEntries == 0 {
+				runtime.Gosched()
+				remainingEntries = policy.entryBudget
+			}
+
+			batchLimit := min(policy.batchSize, remainingEntries)
+
+			count, pending := storage.cleanupExpiredAt(
+				index,
+				now,
+				batchLimit,
+				stats.segment(index),
+			)
 
 			removed += int64(count)
-			more = more || pending
+			remainingEntries -= count
+			hasMore = hasMore || pending
 		}
 
-		if !more {
+		if !hasMore {
 			return removed
 		}
 
 		runtime.Gosched()
+		remainingEntries = policy.entryBudget
 	}
 }
 

@@ -171,10 +171,11 @@ func WithSlidingExpiration() Option {
 // The interval does not affect logical TTL precision or the internal
 // expiration bucket resolution.
 //
-// Background cleanup is disabled by default. Manual cleanup through
-// Cache.CleanupExpired is always available without this option. When
-// background cleanup is enabled, Close must be called to stop the cleaner
-// goroutine.
+// Background cleanup is disabled by default. This is the only cleanup option
+// that starts a background worker; cleanup batch size and entry budget only
+// configure cleanup behavior. Manual cleanup through Cache.CleanupExpired is
+// always available without this option. When background cleanup is enabled,
+// Close must be called to stop the cleaner goroutine.
 func WithCleanupInterval(interval time.Duration) Option {
 	return func(settings *cacheSettings) error {
 		if interval <= 0 {
@@ -188,13 +189,12 @@ func WithCleanupInterval(interval time.Duration) Option {
 }
 
 // WithCleanupBatchSize configures the maximum number of expired entries
-// removed from one storage segment in a single background cleanup batch.
+// removed from one storage segment in a single cleanup batch.
 //
-// Larger batches can increase cleanup throughput but may hold a segment lock
-// for longer. Values larger than a segment or the remaining cleanup budget are
-// safe and are naturally limited by the available work. The default is 256.
-// This option has an effect only when background cleanup is enabled with
-// WithCleanupInterval.
+// The setting applies to both manual and background cleanup. Larger batches
+// can increase cleanup throughput but may hold a segment lock for longer.
+// Values larger than a segment or the remaining cleanup budget are safe and
+// are naturally limited by the available work. The default is 256.
 func WithCleanupBatchSize(size int) Option {
 	return func(settings *cacheSettings) error {
 		if size <= 0 {
@@ -208,13 +208,14 @@ func WithCleanupBatchSize(size int) Option {
 }
 
 // WithCleanupEntryBudget configures the maximum number of expired entries
-// removed during one background cleanup quantum.
+// removed during one cooperative cleanup quantum.
 //
-// Larger budgets allow large expiration backlogs to be drained more
-// aggressively. Cleanup remains bounded by an internal time budget. Values
-// larger than the cache size are safe; the worker stops when no expired work
-// remains. The default is 16384. This option has an effect only when background
-// cleanup is enabled with WithCleanupInterval.
+// The setting applies to both manual and background cleanup. Larger budgets
+// allow large expiration backlogs to be drained more aggressively. Background
+// cleanup is additionally bounded by an internal time budget. Manual cleanup
+// yields cooperatively after exhausting the entry budget and continues until
+// all entries due at the start of the call are drained. Values larger than the
+// cache size are safe. The default is 16384.
 func WithCleanupEntryBudget(entries int) Option {
 	return func(settings *cacheSettings) error {
 		if entries <= 0 {

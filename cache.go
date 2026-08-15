@@ -36,7 +36,8 @@ type Cache[V any] struct {
 	states []cacheState
 	stats  *statsCollector
 
-	cleanup *cleanupWorker[V]
+	cleanupPolicy cleanupPolicy
+	cleanup       *cleanupWorker[V]
 
 	metrics   MetricsRegistration
 	closeOnce sync.Once
@@ -85,12 +86,19 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 		settings.slidingExpiration,
 	)
 
+	policy := cleanupPolicy{
+		batchSize:   settings.cleanupBatchSize,
+		entryBudget: settings.cleanupEntryBudget,
+	}
+
 	cache := &Cache[V]{
 		name: settings.name,
 
 		store:  store,
 		states: newCacheStates(len(store.segments)),
 		stats:  newStatsCollector(len(store.segments)),
+
+		cleanupPolicy: policy,
 
 		ttl:         settings.ttl,
 		jitter:      settings.jitter,
@@ -105,11 +113,8 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 		cache.cleanup = newCleanupWorker(
 			cache.store,
 			cache.stats,
-			cleanupConfig{
-				interval:    settings.cleanupInterval,
-				batchSize:   settings.cleanupBatchSize,
-				entryBudget: settings.cleanupEntryBudget,
-			},
+			cache.cleanupPolicy,
+			settings.cleanupInterval,
 		)
 		cache.cleanup.start()
 	}
@@ -487,13 +492,19 @@ func (cache *Cache[V]) InvalidateAll() {
 // entry is never returned even if it has not yet been reclaimed. Nearby
 // expiration deadlines are grouped internally. Bucket eligibility may trail
 // the exact TTL deadline by up to the internal bucket resolution; actual
-// physical reclamation also depends on when cleanup runs.
+// physical reclamation also depends on when cleanup runs. Manual cleanup uses
+// the configured cleanup batch size and entry budget, yielding cooperatively
+// between quanta until all entries due at the start of the call are drained.
 func (cache *Cache[V]) CleanupExpired() int64 {
 	if !cache.initialized() {
 		return 0
 	}
 
-	return cache.store.cleanupExpired(cache.store.now(), cache.stats)
+	return cache.store.cleanupExpired(
+		cache.store.now(),
+		cache.cleanupPolicy,
+		cache.stats,
+	)
 }
 
 func (cache *Cache[V]) invalidateOne(index int, key string) bool {

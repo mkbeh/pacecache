@@ -10,8 +10,7 @@ const (
 	cleanupContinuationDelay = time.Millisecond
 )
 
-type cleanupConfig struct {
-	interval    time.Duration
+type cleanupPolicy struct {
 	batchSize   int
 	entryBudget int
 }
@@ -20,9 +19,10 @@ type cleanupWorker[V any] struct {
 	store *storage[V]
 	stats *statsCollector
 
-	config cleanupConfig
-	stop   chan struct{}
-	done   chan struct{}
+	policy   cleanupPolicy
+	interval time.Duration
+	stop     chan struct{}
+	done     chan struct{}
 
 	pendingSegments []int
 	nextSegment     int
@@ -31,12 +31,14 @@ type cleanupWorker[V any] struct {
 func newCleanupWorker[V any](
 	store *storage[V],
 	stats *statsCollector,
-	config cleanupConfig,
+	policy cleanupPolicy,
+	interval time.Duration,
 ) *cleanupWorker[V] {
 	return &cleanupWorker[V]{
 		store:           store,
 		stats:           stats,
-		config:          config,
+		policy:          policy,
+		interval:        interval,
 		stop:            make(chan struct{}),
 		done:            make(chan struct{}),
 		pendingSegments: make([]int, 0, len(store.segments)),
@@ -53,14 +55,14 @@ func (worker *cleanupWorker[V]) close() {
 }
 
 func (worker *cleanupWorker[V]) run() {
-	timer := time.NewTimer(worker.config.interval)
+	timer := time.NewTimer(worker.interval)
 	defer timer.Stop()
 	defer close(worker.done)
 
 	for {
 		select {
 		case <-timer.C:
-			next := worker.config.interval
+			next := worker.interval
 
 			if worker.cleanupQuantum(worker.store.now()) {
 				next = worker.continuationDelay()
@@ -74,7 +76,7 @@ func (worker *cleanupWorker[V]) run() {
 	}
 }
 
-// cleanupQuantum performs one bounded cleanupQuantum quantum.
+// cleanupQuantum performs one bounded cleanup quantum.
 //
 // It returns true when there may still be expired entries ready for physical
 // removal. The worker reschedules another quantum after a short cooperative
@@ -86,7 +88,7 @@ func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 	}
 
 	startedAt := time.Now()
-	remainingEntries := worker.config.entryBudget
+	remainingEntries := worker.policy.entryBudget
 
 	pendingSegments := worker.pendingSegments[:0]
 	startSegment := worker.nextSegment
@@ -104,7 +106,7 @@ func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 		}
 
 		segmentIndex := (startSegment + offset) % segmentCount
-		batchLimit := min(worker.config.batchSize, remainingEntries)
+		batchLimit := min(worker.policy.batchSize, remainingEntries)
 
 		removed, hasMore := worker.store.cleanupExpiredAt(
 			segmentIndex,
@@ -128,7 +130,7 @@ func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 	for len(pendingSegments) != 0 {
 		nextCount := 0
 
-		for _, index := range pendingSegments {
+		for _, segmentIndex := range pendingSegments {
 			if worker.stopped() {
 				worker.pendingSegments = pendingSegments[:0]
 				return false
@@ -136,20 +138,25 @@ func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 
 			if remainingEntries == 0 || cleanupTimeBudgetExceeded(startedAt) {
 				// Preserve fair continuation by starting the next quantum at the
-				// first active segment we did not get to process in this round.
-				worker.nextSegment = index
+				// first pending segment we did not get to process in this round.
+				worker.nextSegment = segmentIndex
 				worker.pendingSegments = pendingSegments[:0]
 				return true
 			}
 
-			limit := min(worker.config.batchSize, remainingEntries)
+			batchLimit := min(worker.policy.batchSize, remainingEntries)
 
-			removed, more := worker.store.cleanupExpiredAt(index, now, limit, worker.stats.segment(index))
+			removed, hasMore := worker.store.cleanupExpiredAt(
+				segmentIndex,
+				now,
+				batchLimit,
+				worker.stats.segment(segmentIndex),
+			)
 
 			remainingEntries -= removed
 
-			if more {
-				pendingSegments[nextCount] = index
+			if hasMore {
+				pendingSegments[nextCount] = segmentIndex
 				nextCount++
 			}
 		}
@@ -163,7 +170,7 @@ func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 }
 
 func (worker *cleanupWorker[V]) continuationDelay() time.Duration {
-	return min(worker.config.interval, cleanupContinuationDelay)
+	return min(worker.interval, cleanupContinuationDelay)
 }
 
 func (worker *cleanupWorker[V]) stopped() bool {
