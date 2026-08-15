@@ -86,13 +86,13 @@ type Stats struct {
 
 // statsCollector owns all mutable cache statistics.
 //
-// Each shard corresponds to one storage and coordination segment.
+// Each segment corresponds to one storage and coordination segment.
 type statsCollector struct {
-	shards              []statsShard
+	segments            []segmentStats
 	invalidatedAllCount atomic.Int64
 }
 
-type statsShard struct {
+type segmentStats struct {
 	// Protected by the corresponding storage segment mutex.
 	hitCount         int64
 	negativeHitCount int64
@@ -112,12 +112,6 @@ type statsShard struct {
 	invalidatedKeyCount atomic.Int64
 }
 
-func newStatsCollector(segmentCount int) *statsCollector {
-	return &statsCollector{
-		shards: make([]statsShard, segmentCount),
-	}
-}
-
 // Stats returns a detached snapshot of the current cache statistics.
 func (cache *Cache[V]) Stats() Stats {
 	if !cache.initialized() {
@@ -132,7 +126,7 @@ func (cache *Cache[V]) Stats() Stats {
 
 	for index := range cache.store.segments {
 		segment := &cache.store.segments[index]
-		shard := cache.stats.shard(index)
+		shard := cache.stats.segment(index)
 
 		// Storage counters share the storage segment mutex with the operations
 		// that update them.
@@ -158,29 +152,35 @@ func (cache *Cache[V]) Stats() Stats {
 	return snapshot
 }
 
-func (stats *statsCollector) shard(index int) *statsShard {
-	return &stats.shards[index]
+func newStatsCollector(segmentCount int) *statsCollector {
+	return &statsCollector{
+		segments: make([]segmentStats, segmentCount),
+	}
+}
+
+func (stats *statsCollector) segment(index int) *segmentStats {
+	return &stats.segments[index]
 }
 
 func (stats *statsCollector) recordLoad(index int, found bool, err error, duration time.Duration) {
-	shard := stats.shard(index)
+	counters := stats.segment(index)
 
-	shard.loadDurationNanos.Add(duration.Nanoseconds())
+	counters.loadDurationNanos.Add(duration.Nanoseconds())
 
 	switch {
 	case err != nil:
-		shard.loadErrorCount.Add(1)
+		counters.loadErrorCount.Add(1)
 
 	case found:
-		shard.loadFoundCount.Add(1)
+		counters.loadFoundCount.Add(1)
 
 	default:
-		shard.loadNotFoundCount.Add(1)
+		counters.loadNotFoundCount.Add(1)
 	}
 }
 
 func (stats *statsCollector) recordShared(index int) {
-	stats.shard(index).sharedCount.Add(1)
+	stats.segment(index).sharedCount.Add(1)
 }
 
 func (stats *statsCollector) recordKeyInvalidation(index int, count int64) {
@@ -188,7 +188,7 @@ func (stats *statsCollector) recordKeyInvalidation(index int, count int64) {
 		return
 	}
 
-	stats.shard(index).invalidatedKeyCount.Add(count)
+	stats.segment(index).invalidatedKeyCount.Add(count)
 }
 
 func (stats *statsCollector) recordAllInvalidation(count int64) {

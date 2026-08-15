@@ -179,11 +179,27 @@ func (storage *storage[V]) deadlineAt(expiresAt time.Time) int64 {
 	return int64(deadline)
 }
 
+func (storage *storage[V]) segmentIndex(key string) int {
+	if len(storage.segments) == 1 {
+		return 0
+	}
+
+	hash := maphash.String(storage.seed, key)
+
+	if storage.mask != 0 {
+		return int(hash & storage.mask)
+	}
+
+	return int(
+		hash % uint64(len(storage.segments)),
+	)
+}
+
 func (storage *storage[V]) lookupAt(
 	index int,
 	key string,
 	now int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].lookup(key, now, stats)
 }
@@ -192,7 +208,7 @@ func (storage *storage[V]) getAt(
 	index int,
 	key string,
 	now int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].get(key, now, stats)
 }
@@ -202,7 +218,7 @@ func (storage *storage[V]) setAt(
 	key string,
 	value cachedValue[V],
 	deadline int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) {
 	storage.segments[index].set(key, value, deadline, stats)
 }
@@ -228,7 +244,7 @@ func (storage *storage[V]) cleanupExpiredAt(
 	index int,
 	now int64,
 	limit int,
-	stats *statsShard,
+	stats *segmentStats,
 ) (int, bool) {
 	return storage.segments[index].cleanupExpired(now, limit, stats)
 }
@@ -243,7 +259,7 @@ func (storage *storage[V]) cleanupExpired(
 		more := false
 
 		for index := range storage.segments {
-			count, pending := storage.cleanupExpiredAt(index, now, cleanupBatchSize, stats.shard(index))
+			count, pending := storage.cleanupExpiredAt(index, now, defaultCleanupBatchSize, stats.segment(index))
 
 			removed += int64(count)
 			more = more || pending
@@ -257,26 +273,10 @@ func (storage *storage[V]) cleanupExpired(
 	}
 }
 
-func (storage *storage[V]) segmentIndex(key string) int {
-	if len(storage.segments) == 1 {
-		return 0
-	}
-
-	hash := maphash.String(storage.seed, key)
-
-	if storage.mask != 0 {
-		return int(hash & storage.mask)
-	}
-
-	return int(
-		hash % uint64(len(storage.segments)),
-	)
-}
-
 func (segment *storageSegment[V]) lookup(
 	key string,
 	now int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
@@ -304,7 +304,7 @@ func (segment *storageSegment[V]) lookup(
 func (segment *storageSegment[V]) get(
 	key string,
 	now int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
@@ -315,7 +315,7 @@ func (segment *storageSegment[V]) get(
 func (segment *storageSegment[V]) getLocked(
 	key string,
 	now int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	item, ok := segment.entries[key]
 	if !ok {
@@ -362,7 +362,7 @@ func (segment *storageSegment[V]) set(
 	key string,
 	value cachedValue[V],
 	deadline int64,
-	stats *statsShard,
+	stats *segmentStats,
 ) {
 	// A zero-capacity segment is possible for direct internal construction with
 	// more segments than entries. Such a segment simply stores nothing.
@@ -455,10 +455,16 @@ func (segment *storageSegment[V]) deleteAll() int64 {
 	return deleted
 }
 
+func (segment *storageSegment[V]) removeLocked(item *entry[V]) {
+	segment.expirations.remove(item)
+	delete(segment.entries, item.key)
+	segment.unlinkLocked(item)
+}
+
 func (segment *storageSegment[V]) cleanupExpired(
 	now int64,
 	limit int,
-	stats *statsShard,
+	stats *segmentStats,
 ) (int, bool) {
 	if limit <= 0 || !segment.expirations.enabled() {
 		return 0, false
@@ -471,7 +477,7 @@ func (segment *storageSegment[V]) cleanupExpired(
 	removed := 0
 
 	for removed < limit &&
-		segment.expirations.rootDue(dueID) {
+		segment.expirations.hasDueBucket(dueID) {
 		item := segment.expirations.popRootEntry()
 
 		current, ok := segment.entries[item.key]
@@ -488,13 +494,7 @@ func (segment *storageSegment[V]) cleanupExpired(
 		}
 	}
 
-	return removed, segment.expirations.rootDue(dueID)
-}
-
-func (segment *storageSegment[V]) removeLocked(item *entry[V]) {
-	segment.expirations.remove(item)
-	delete(segment.entries, item.key)
-	segment.unlinkLocked(item)
+	return removed, segment.expirations.hasDueBucket(dueID)
 }
 
 func (segment *storageSegment[V]) pushFrontLocked(item *entry[V]) {

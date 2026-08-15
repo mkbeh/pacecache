@@ -3,8 +3,9 @@ package pacecache
 import "time"
 
 const (
-	cleanupBatchSize         = 256
-	cleanupEntryBudget       = 16 * 1024
+	defaultCleanupBatchSize   = 256
+	defaultCleanupEntryBudget = 16 * 1024
+
 	cleanupTimeBudget        = time.Millisecond
 	cleanupContinuationDelay = time.Millisecond
 )
@@ -23,8 +24,8 @@ type cleanupWorker[V any] struct {
 	stop   chan struct{}
 	done   chan struct{}
 
-	active []int
-	cursor int
+	pendingSegments []int
+	nextSegment     int
 }
 
 func newCleanupWorker[V any](
@@ -33,12 +34,12 @@ func newCleanupWorker[V any](
 	config cleanupConfig,
 ) *cleanupWorker[V] {
 	return &cleanupWorker[V]{
-		store:  store,
-		stats:  stats,
-		config: config,
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
-		active: make([]int, 0, len(store.segments)),
+		store:           store,
+		stats:           stats,
+		config:          config,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+		pendingSegments: make([]int, 0, len(store.segments)),
 	}
 }
 
@@ -61,7 +62,7 @@ func (worker *cleanupWorker[V]) run() {
 		case <-timer.C:
 			next := worker.config.interval
 
-			if worker.cleanup(worker.store.now()) {
+			if worker.cleanupQuantum(worker.store.now()) {
 				next = worker.continuationDelay()
 			}
 
@@ -73,95 +74,96 @@ func (worker *cleanupWorker[V]) run() {
 	}
 }
 
-// cleanup performs one bounded cleanup quantum.
+// cleanupQuantum performs one bounded cleanupQuantum quantum.
 //
 // It returns true when there may still be expired entries ready for physical
 // removal. The worker reschedules another quantum after a short cooperative
 // delay instead of draining an unbounded backlog in one call.
-func (worker *cleanupWorker[V]) cleanup(now int64) bool {
+func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 	segmentCount := len(worker.store.segments)
 	if segmentCount == 0 {
 		return false
 	}
 
 	startedAt := time.Now()
-	remaining := worker.config.entryBudget
+	remainingEntries := worker.config.entryBudget
 
-	active := worker.active[:0]
-	start := worker.cursor
+	pendingSegments := worker.pendingSegments[:0]
+	startSegment := worker.nextSegment
 
 	for offset := range segmentCount {
 		if worker.stopped() {
-			worker.active = active[:0]
+			worker.pendingSegments = pendingSegments[:0]
 			return false
 		}
 
-		if remaining == 0 || cleanupBudgetExpired(startedAt) {
-			worker.cursor = (start + offset) % segmentCount
-			worker.active = active[:0]
+		if remainingEntries == 0 || cleanupTimeBudgetExceeded(startedAt) {
+			worker.nextSegment = (startSegment + offset) % segmentCount
+			worker.pendingSegments = pendingSegments[:0]
 			return true
 		}
 
-		index := (start + offset) % segmentCount
-		limit := min(worker.config.batchSize, remaining)
+		segmentIndex := (startSegment + offset) % segmentCount
+		batchLimit := min(worker.config.batchSize, remainingEntries)
 
-		removed, more := worker.store.cleanupExpiredAt(index, now, limit, worker.stats.shard(index))
+		removed, hasMore := worker.store.cleanupExpiredAt(
+			segmentIndex,
+			now,
+			batchLimit,
+			worker.stats.segment(segmentIndex),
+		)
 
-		remaining -= removed
+		remainingEntries -= removed
 
-		if more {
-			active = append(active, index)
+		if hasMore {
+			pendingSegments = append(pendingSegments, segmentIndex)
 		}
 	}
 
 	// Rotate the first segment between complete passes so that no segment gets
 	// a permanent first-mover advantage when cleanup repeatedly finds work in
 	// many segments.
-	worker.cursor = (start + 1) % segmentCount
+	worker.nextSegment = (startSegment + 1) % segmentCount
 
-	for len(active) != 0 {
+	for len(pendingSegments) != 0 {
 		nextCount := 0
 
-		for _, index := range active {
+		for _, index := range pendingSegments {
 			if worker.stopped() {
-				worker.active = active[:0]
+				worker.pendingSegments = pendingSegments[:0]
 				return false
 			}
 
-			if remaining == 0 || cleanupBudgetExpired(startedAt) {
+			if remainingEntries == 0 || cleanupTimeBudgetExceeded(startedAt) {
 				// Preserve fair continuation by starting the next quantum at the
 				// first active segment we did not get to process in this round.
-				worker.cursor = index
-				worker.active = active[:0]
+				worker.nextSegment = index
+				worker.pendingSegments = pendingSegments[:0]
 				return true
 			}
 
-			limit := min(worker.config.batchSize, remaining)
+			limit := min(worker.config.batchSize, remainingEntries)
 
-			removed, more := worker.store.cleanupExpiredAt(index, now, limit, worker.stats.shard(index))
+			removed, more := worker.store.cleanupExpiredAt(index, now, limit, worker.stats.segment(index))
 
-			remaining -= removed
+			remainingEntries -= removed
 
 			if more {
-				active[nextCount] = index
+				pendingSegments[nextCount] = index
 				nextCount++
 			}
 		}
 
-		active = active[:nextCount]
+		pendingSegments = pendingSegments[:nextCount]
 	}
 
-	worker.active = active[:0]
+	worker.pendingSegments = pendingSegments[:0]
 
 	return false
 }
 
 func (worker *cleanupWorker[V]) continuationDelay() time.Duration {
 	return min(worker.config.interval, cleanupContinuationDelay)
-}
-
-func cleanupBudgetExpired(startedAt time.Time) bool {
-	return time.Since(startedAt) >= cleanupTimeBudget
 }
 
 func (worker *cleanupWorker[V]) stopped() bool {
@@ -171,4 +173,8 @@ func (worker *cleanupWorker[V]) stopped() bool {
 	default:
 		return false
 	}
+}
+
+func cleanupTimeBudgetExceeded(startedAt time.Time) bool {
+	return time.Since(startedAt) >= cleanupTimeBudget
 }

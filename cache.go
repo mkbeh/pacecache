@@ -171,7 +171,7 @@ func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	}
 
 	index := cache.store.segmentIndex(key)
-	stats := cache.stats.shard(index)
+	stats := cache.stats.segment(index)
 
 	cached, ok := cache.store.lookupAt(index, key, cache.store.now(), stats)
 	if !ok {
@@ -183,23 +183,6 @@ func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 	}
 
 	return cached.value, LookupHit
-}
-
-// CleanupExpired physically removes expired entries using the cache expiration
-// index and returns the number of entries removed.
-//
-// CleanupExpired is always available; background cleanup does not need to be
-// enabled. Logical expiration is independent of physical cleanup: an expired
-// entry is never returned even if it has not yet been reclaimed. Nearby
-// expiration deadlines are grouped internally. Bucket eligibility may trail
-// the exact TTL deadline by up to the internal bucket resolution; actual
-// physical reclamation also depends on when cleanup runs.
-func (cache *Cache[V]) CleanupExpired() int64 {
-	if !cache.initialized() {
-		return 0
-	}
-
-	return cache.store.cleanupExpired(cache.store.now(), cache.stats)
 }
 
 // GetOrLoad returns the cached result for key or obtains it from loader.
@@ -235,7 +218,7 @@ func (cache *Cache[V]) GetOrLoad(
 	}
 
 	index := cache.store.segmentIndex(key)
-	stats := cache.stats.shard(index)
+	stats := cache.stats.segment(index)
 
 	if cached, ok := cache.store.lookupAt(index, key, cache.store.now(), stats); ok {
 		return cached.value, cached.found, nil
@@ -496,6 +479,23 @@ func (cache *Cache[V]) InvalidateAll() {
 	cache.stats.recordAllInvalidation(invalidated)
 }
 
+// CleanupExpired physically removes expired entries using the cache expiration
+// index and returns the number of entries removed.
+//
+// CleanupExpired is always available; background cleanup does not need to be
+// enabled. Logical expiration is independent of physical cleanup: an expired
+// entry is never returned even if it has not yet been reclaimed. Nearby
+// expiration deadlines are grouped internally. Bucket eligibility may trail
+// the exact TTL deadline by up to the internal bucket resolution; actual
+// physical reclamation also depends on when cleanup runs.
+func (cache *Cache[V]) CleanupExpired() int64 {
+	if !cache.initialized() {
+		return 0
+	}
+
+	return cache.store.cleanupExpired(cache.store.now(), cache.stats)
+}
+
 func (cache *Cache[V]) invalidateOne(index int, key string) bool {
 	state := &cache.states[index]
 
@@ -509,28 +509,6 @@ func (cache *Cache[V]) invalidateOne(index int, key string) bool {
 	state.mu.Unlock()
 
 	return removed
-}
-
-func (cache *Cache[V]) storePositive(
-	index int,
-	key string,
-	value V,
-	expiration time.Duration,
-	now int64,
-) {
-	refreshTTL := cache.effectiveExpirationTTL(expiration)
-
-	cache.store.setAt(
-		index,
-		key,
-		cachedValue[V]{
-			value:      value,
-			found:      true,
-			refreshTTL: refreshTTL,
-		},
-		deadlineAfter(now, refreshTTL),
-		cache.stats.shard(index),
-	)
 }
 
 func (cache *Cache[V]) storeLoaded(
@@ -551,9 +529,31 @@ func (cache *Cache[V]) storeLoaded(
 				found: false,
 			},
 			deadlineAfter(now, cache.negativeTTL),
-			cache.stats.shard(index),
+			cache.stats.segment(index),
 		)
 	}
+}
+
+func (cache *Cache[V]) storePositive(
+	index int,
+	key string,
+	value V,
+	expiration time.Duration,
+	now int64,
+) {
+	refreshTTL := cache.effectiveExpirationTTL(expiration)
+
+	cache.store.setAt(
+		index,
+		key,
+		cachedValue[V]{
+			value:      value,
+			found:      true,
+			refreshTTL: refreshTTL,
+		},
+		deadlineAfter(now, refreshTTL),
+		cache.stats.segment(index),
+	)
 }
 
 func (cache *Cache[V]) effectiveExpirationTTL(expiration time.Duration) time.Duration {
@@ -584,7 +584,7 @@ func deadlineAfter(now int64, ttl time.Duration) int64 {
 	return now + delta
 }
 
-func jitteredTTL(ttl time.Duration, jitter time.Duration) time.Duration {
+func jitteredTTL(ttl, jitter time.Duration) time.Duration {
 	if jitter == 0 {
 		return ttl
 	}

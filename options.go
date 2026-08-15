@@ -60,8 +60,8 @@ func defaultCacheSettings() *cacheSettings {
 		maxEntries:         defaultMaxEntries,
 		segmentCount:       defaultStorageSegmentCount,
 		ttl:                defaultTTL,
-		cleanupBatchSize:   cleanupBatchSize,
-		cleanupEntryBudget: cleanupEntryBudget,
+		cleanupBatchSize:   defaultCleanupBatchSize,
+		cleanupEntryBudget: defaultCleanupEntryBudget,
 	}
 }
 
