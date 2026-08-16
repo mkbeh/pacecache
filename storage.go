@@ -195,6 +195,24 @@ func (storage *storage[K, V]) segmentIndex(key K) int {
 	)
 }
 
+func (storage *storage[K, V]) existsAt(
+	index int,
+	key K,
+	now int64,
+	stats *segmentStats,
+) bool {
+	return storage.segments[index].exists(key, now, stats)
+}
+
+func (storage *storage[K, V]) refreshTTLAt(
+	index int,
+	key K,
+	now int64,
+	stats *segmentStats,
+) bool {
+	return storage.segments[index].refreshTTL(key, now, stats)
+}
+
 func (storage *storage[K, V]) lookupAt(
 	index int,
 	key K,
@@ -288,6 +306,76 @@ func (storage *storage[K, V]) cleanupExpired(
 		runtime.Gosched()
 		remainingEntries = policy.entryBudget
 	}
+}
+
+func (segment *storageSegment[K, V]) exists(
+	key K,
+	now int64,
+	stats *segmentStats,
+) bool {
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	item, ok := segment.entries[key]
+	if !ok {
+		return false
+	}
+
+	if item.deadline != 0 && now >= item.deadline {
+		segment.removeLocked(item)
+
+		if stats != nil {
+			stats.expirationCount++
+		}
+
+		return false
+	}
+
+	return item.found
+}
+
+func (segment *storageSegment[K, V]) refreshTTL(
+	key K,
+	now int64,
+	stats *segmentStats,
+) bool {
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	item, ok := segment.entries[key]
+	if !ok {
+		return false
+	}
+
+	if item.deadline != 0 && now >= item.deadline {
+		segment.removeLocked(item)
+
+		if stats != nil {
+			stats.expirationCount++
+		}
+
+		return false
+	}
+
+	if !item.found {
+		return false
+	}
+
+	// A live positive entry without time-based expiration exists, but there is
+	// no deadline to refresh.
+	if item.refreshTTL == 0 {
+		return true
+	}
+
+	deadline := deadlineAfter(now, item.refreshTTL)
+
+	// now may have been captured before waiting for the segment lock. Never let
+	// an older refresh shorten a deadline established by a newer operation.
+	if deadline > item.deadline {
+		segment.expirations.update(item, deadline)
+	}
+
+	return true
 }
 
 func (segment *storageSegment[K, V]) lookup(

@@ -158,6 +158,55 @@ func (cache *Cache[K, V]) Close() {
 	)
 }
 
+// Exists reports whether a live positive entry exists for key.
+//
+// Negative, expired, and missing entries return false. Exists does not update
+// LRU recency, refresh sliding expiration, or affect lookup statistics.
+//
+// An expired entry observed by Exists is removed from storage and contributes
+// to expiration statistics.
+func (cache *Cache[K, V]) Exists(key K) bool {
+	if !cache.initialized() {
+		return false
+	}
+
+	index := cache.store.segmentIndex(key)
+
+	return cache.store.existsAt(
+		index,
+		key,
+		cache.store.now(),
+		cache.stats.segment(index),
+	)
+}
+
+// RefreshTTL renews the expiration deadline of a live positive entry.
+//
+// The entry is refreshed using the effective TTL with which it was stored.
+// RefreshTTL works independently of sliding expiration. A positive entry
+// without time-based expiration is considered live and returns true without
+// changing its state.
+//
+// Negative, expired, and missing entries return false. An expired entry
+// observed by RefreshTTL is removed from storage and contributes to expiration
+// statistics.
+//
+// RefreshTTL does not update LRU recency or lookup statistics.
+func (cache *Cache[K, V]) RefreshTTL(key K) bool {
+	if !cache.initialized() {
+		return false
+	}
+
+	index := cache.store.segmentIndex(key)
+
+	return cache.store.refreshTTLAt(
+		index,
+		key,
+		cache.store.now(),
+		cache.stats.segment(index),
+	)
+}
+
 // Get returns the cached value for key.
 //
 // LookupHit is returned for a positive cache hit. LookupNegativeHit is
