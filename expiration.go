@@ -10,38 +10,38 @@ const (
 	maxSpareExpirationBuckets         = 4
 )
 
-type expirationIndex[V any] struct {
+type expirationIndex[K comparable, V any] struct {
 	resolutionNanos int64
 
-	buckets    map[int64]*expirationBucket[V]
-	bucketHeap expirationBucketHeap[V]
+	buckets    map[int64]*expirationBucket[K, V]
+	bucketHeap expirationBucketHeap[K, V]
 
-	spareBuckets [maxSpareExpirationBuckets]*expirationBucket[V]
+	spareBuckets [maxSpareExpirationBuckets]*expirationBucket[K, V]
 	spareCount   int
 }
 
-type expirationBucket[V any] struct {
+type expirationBucket[K comparable, V any] struct {
 	id        int64
 	heapIndex int
 	count     int
 
-	head *entry[V]
-	tail *entry[V]
+	head *entry[K, V]
+	tail *entry[K, V]
 }
 
-type expirationBucketHeap[V any] []*expirationBucket[V]
+type expirationBucketHeap[K comparable, V any] []*expirationBucket[K, V]
 
-func newExpirationIndex[V any](resolution time.Duration) expirationIndex[V] {
-	return expirationIndex[V]{
+func newExpirationIndex[K comparable, V any](resolution time.Duration) expirationIndex[K, V] {
+	return expirationIndex[K, V]{
 		resolutionNanos: int64(resolution),
 	}
 }
 
-func (index *expirationIndex[V]) enabled() bool {
+func (index *expirationIndex[K, V]) enabled() bool {
 	return index != nil && index.resolutionNanos > 0
 }
 
-func (index *expirationIndex[V]) update(item *entry[V], deadline int64) {
+func (index *expirationIndex[K, V]) update(item *entry[K, V], deadline int64) {
 	if !index.enabled() {
 		item.deadline = deadline
 		return
@@ -84,7 +84,7 @@ func (index *expirationIndex[V]) update(item *entry[V], deadline int64) {
 	index.add(item)
 }
 
-func (index *expirationIndex[V]) add(item *entry[V]) {
+func (index *expirationIndex[K, V]) add(item *entry[K, V]) {
 	if !index.enabled() || item.deadline == 0 {
 		return
 	}
@@ -94,7 +94,7 @@ func (index *expirationIndex[V]) add(item *entry[V]) {
 
 	if bucket == nil {
 		if index.buckets == nil {
-			index.buckets = make(map[int64]*expirationBucket[V])
+			index.buckets = make(map[int64]*expirationBucket[K, V])
 		}
 
 		bucket = index.acquireBucket(id)
@@ -105,7 +105,7 @@ func (index *expirationIndex[V]) add(item *entry[V]) {
 	bucket.pushBack(item)
 }
 
-func (index *expirationIndex[V]) remove(item *entry[V]) {
+func (index *expirationIndex[K, V]) remove(item *entry[K, V]) {
 	if !index.enabled() || item.deadline == 0 {
 		return
 	}
@@ -124,7 +124,7 @@ func (index *expirationIndex[V]) remove(item *entry[V]) {
 	}
 }
 
-func (index *expirationIndex[V]) reset() {
+func (index *expirationIndex[K, V]) reset() {
 	if !index.enabled() {
 		return
 	}
@@ -138,7 +138,7 @@ func (index *expirationIndex[V]) reset() {
 	}
 }
 
-func (index *expirationIndex[V]) bucketID(deadline int64) int64 {
+func (index *expirationIndex[K, V]) bucketID(deadline int64) int64 {
 	if deadline <= 0 {
 		return 0
 	}
@@ -151,7 +151,7 @@ func (index *expirationIndex[V]) bucketID(deadline int64) int64 {
 	return id
 }
 
-func (index *expirationIndex[V]) dueBucketID(now int64) int64 {
+func (index *expirationIndex[K, V]) dueBucketID(now int64) int64 {
 	if now < 0 {
 		return -1
 	}
@@ -159,11 +159,11 @@ func (index *expirationIndex[V]) dueBucketID(now int64) int64 {
 	return now / index.resolutionNanos
 }
 
-func (index *expirationIndex[V]) hasDueBucket(dueBucketID int64) bool {
+func (index *expirationIndex[K, V]) hasDueBucket(dueBucketID int64) bool {
 	return len(index.bucketHeap) != 0 && index.bucketHeap[0].id <= dueBucketID
 }
 
-func (index *expirationIndex[V]) popRootEntry() *entry[V] {
+func (index *expirationIndex[K, V]) popRootEntry() *entry[K, V] {
 	bucket := index.bucketHeap[0]
 	item := bucket.popBack()
 
@@ -180,7 +180,7 @@ func (index *expirationIndex[V]) popRootEntry() *entry[V] {
 	return item
 }
 
-func (index *expirationIndex[V]) entryCount() int64 {
+func (index *expirationIndex[K, V]) entryCount() int64 {
 	var total int64
 
 	for _, bucket := range index.bucketHeap {
@@ -190,8 +190,8 @@ func (index *expirationIndex[V]) entryCount() int64 {
 	return total
 }
 
-func (index *expirationIndex[V]) rekeySingletonBucket(
-	item *entry[V],
+func (index *expirationIndex[K, V]) rekeySingletonBucket(
+	item *entry[K, V],
 	oldBucketID int64,
 	newBucketID int64,
 	deadline int64,
@@ -222,9 +222,9 @@ func (index *expirationIndex[V]) rekeySingletonBucket(
 	return true
 }
 
-func (index *expirationIndex[V]) acquireBucket(id int64) *expirationBucket[V] {
+func (index *expirationIndex[K, V]) acquireBucket(id int64) *expirationBucket[K, V] {
 	if index.spareCount == 0 {
-		return &expirationBucket[V]{
+		return &expirationBucket[K, V]{
 			id:        id,
 			heapIndex: -1,
 		}
@@ -240,12 +240,12 @@ func (index *expirationIndex[V]) acquireBucket(id int64) *expirationBucket[V] {
 	return bucket
 }
 
-func (index *expirationIndex[V]) deactivateBucket(bucket *expirationBucket[V]) {
+func (index *expirationIndex[K, V]) deactivateBucket(bucket *expirationBucket[K, V]) {
 	delete(index.buckets, bucket.id)
 	heap.Remove(&index.bucketHeap, bucket.heapIndex)
 }
 
-func (index *expirationIndex[V]) releaseBucket(bucket *expirationBucket[V]) {
+func (index *expirationIndex[K, V]) releaseBucket(bucket *expirationBucket[K, V]) {
 	bucket.id = 0
 	bucket.heapIndex = -1
 	bucket.count = 0
@@ -261,7 +261,7 @@ func (index *expirationIndex[V]) releaseBucket(bucket *expirationBucket[V]) {
 	index.spareCount++
 }
 
-func (bucket *expirationBucket[V]) pushBack(item *entry[V]) {
+func (bucket *expirationBucket[K, V]) pushBack(item *entry[K, V]) {
 	item.expirationPrevious = bucket.tail
 	item.expirationNext = nil
 
@@ -275,7 +275,7 @@ func (bucket *expirationBucket[V]) pushBack(item *entry[V]) {
 	bucket.count++
 }
 
-func (bucket *expirationBucket[V]) remove(item *entry[V]) {
+func (bucket *expirationBucket[K, V]) remove(item *entry[K, V]) {
 	if bucket.count <= 0 {
 		panic("pacecache: expiration bucket count underflow")
 	}
@@ -301,7 +301,7 @@ func (bucket *expirationBucket[V]) remove(item *entry[V]) {
 	bucket.count--
 }
 
-func (bucket *expirationBucket[V]) popBack() *entry[V] {
+func (bucket *expirationBucket[K, V]) popBack() *entry[K, V] {
 	item := bucket.tail
 	if item == nil {
 		return nil
@@ -312,22 +312,22 @@ func (bucket *expirationBucket[V]) popBack() *entry[V] {
 	return item
 }
 
-func (queue expirationBucketHeap[V]) Len() int {
+func (queue expirationBucketHeap[K, V]) Len() int {
 	return len(queue)
 }
 
-func (queue expirationBucketHeap[V]) Less(left, right int) bool {
+func (queue expirationBucketHeap[K, V]) Less(left, right int) bool {
 	return queue[left].id < queue[right].id
 }
 
-func (queue expirationBucketHeap[V]) Swap(left, right int) {
+func (queue expirationBucketHeap[K, V]) Swap(left, right int) {
 	queue[left], queue[right] = queue[right], queue[left]
 	queue[left].heapIndex = left
 	queue[right].heapIndex = right
 }
 
-func (queue *expirationBucketHeap[V]) Push(value any) {
-	bucket, ok := value.(*expirationBucket[V])
+func (queue *expirationBucketHeap[K, V]) Push(value any) {
+	bucket, ok := value.(*expirationBucket[K, V])
 	if !ok {
 		panic("pacecache: invalid expiration bucket heap value")
 	}
@@ -336,7 +336,7 @@ func (queue *expirationBucketHeap[V]) Push(value any) {
 	*queue = append(*queue, bucket)
 }
 
-func (queue *expirationBucketHeap[V]) Pop() any {
+func (queue *expirationBucketHeap[K, V]) Pop() any {
 	old := *queue
 	last := len(old) - 1
 	bucket := old[last]

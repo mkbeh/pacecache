@@ -25,14 +25,14 @@ type MetricsRegistration interface {
 }
 
 // cacheStatsProvider exposes only the capabilities required by Metrics.
-type cacheStatsProvider[V any] struct {
-	cache *Cache[V]
+type cacheStatsProvider[K comparable, V any] struct {
+	cache *Cache[K, V]
 }
 
-func (provider cacheStatsProvider[V]) Name() string {
+func (provider cacheStatsProvider[K, V]) Name() string {
 	return provider.cache.Name()
 }
 
-func (provider cacheStatsProvider[V]) Stats() Stats {
+func (provider cacheStatsProvider[K, V]) Stats() Stats {
 	return provider.cache.Stats()
 }

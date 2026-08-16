@@ -9,8 +9,8 @@ import (
 
 const defaultStorageSegmentCount = 32
 
-type entry[V any] struct {
-	key string
+type entry[K comparable, V any] struct {
+	key K
 
 	value V
 	found bool
@@ -26,49 +26,49 @@ type entry[V any] struct {
 	deadline int64
 
 	// Exact LRU membership.
-	previous *entry[V]
-	next     *entry[V]
+	previous *entry[K, V]
+	next     *entry[K, V]
 
 	// Expiration bucket membership. These links are independent from the LRU
 	// list so expiration maintenance never needs another per-entry allocation.
-	expirationPrevious *entry[V]
-	expirationNext     *entry[V]
+	expirationPrevious *entry[K, V]
+	expirationNext     *entry[K, V]
 }
 
 // storage routes keys across independent storage segments.
 //
 // Each segment owns its map, LRU list, expiration index, and mutex. Segment
 // capacities sum exactly to MaxEntries.
-type storage[V any] struct {
+type storage[K comparable, V any] struct {
 	seed   maphash.Seed
 	origin time.Time
 
-	segments   []storageSegment[V]
+	segments   []storageSegment[K, V]
 	mask       uint64
 	maxEntries int
 }
 
-type storageSegment[V any] struct {
+type storageSegment[K comparable, V any] struct {
 	mu sync.Mutex
 
-	entries map[string]*entry[V]
+	entries map[K]*entry[K, V]
 
-	head *entry[V]
-	tail *entry[V]
+	head *entry[K, V]
+	tail *entry[K, V]
 
-	expirations expirationIndex[V]
+	expirations expirationIndex[K, V]
 
 	slidingExpiration bool
 
 	maxEntries int
 }
 
-func newStorage[V any](
+func newStorage[K comparable, V any](
 	maxEntries int,
 	segmentCount int,
 	slidingExpiration bool,
-) *storage[V] {
-	store := newStorageWithExpirationResolution[V](
+) *storage[K, V] {
+	store := newStorageWithExpirationResolution[K, V](
 		maxEntries,
 		segmentCount,
 		defaultExpirationBucketResolution,
@@ -81,11 +81,11 @@ func newStorage[V any](
 	return store
 }
 
-func newStorageWithExpirationResolution[V any](
+func newStorageWithExpirationResolution[K comparable, V any](
 	maxEntries int,
 	segmentCount int,
 	resolution time.Duration,
-) *storage[V] {
+) *storage[K, V] {
 	if maxEntries == 0 {
 		maxEntries = defaultMaxEntries
 	}
@@ -94,14 +94,14 @@ func newStorageWithExpirationResolution[V any](
 		segmentCount = defaultStorageSegmentCount
 	}
 
-	store := newStorageWithSegments[V](maxEntries, segmentCount)
+	store := newStorageWithSegments[K, V](maxEntries, segmentCount)
 	store.enableExpirationIndex(resolution)
 
 	return store
 }
 
-func newStorageWithSegments[V any](maxEntries, segmentCount int) *storage[V] {
-	segments := make([]storageSegment[V], segmentCount)
+func newStorageWithSegments[K comparable, V any](maxEntries, segmentCount int) *storage[K, V] {
+	segments := make([]storageSegment[K, V], segmentCount)
 
 	baseCapacity := maxEntries / segmentCount
 	extraCapacity := maxEntries % segmentCount
@@ -113,8 +113,8 @@ func newStorageWithSegments[V any](maxEntries, segmentCount int) *storage[V] {
 			capacity++
 		}
 
-		segments[index] = storageSegment[V]{
-			entries:    make(map[string]*entry[V], capacity),
+		segments[index] = storageSegment[K, V]{
+			entries:    make(map[K]*entry[K, V], capacity),
 			maxEntries: capacity,
 		}
 	}
@@ -125,7 +125,7 @@ func newStorageWithSegments[V any](maxEntries, segmentCount int) *storage[V] {
 		mask = uint64(segmentCount - 1)
 	}
 
-	return &storage[V]{
+	return &storage[K, V]{
 		seed:       maphash.MakeSeed(),
 		origin:     time.Now(),
 		segments:   segments,
@@ -134,31 +134,31 @@ func newStorageWithSegments[V any](maxEntries, segmentCount int) *storage[V] {
 	}
 }
 
-func (storage *storage[V]) enableExpirationIndex(resolution time.Duration) {
+func (storage *storage[K, V]) enableExpirationIndex(resolution time.Duration) {
 	if resolution <= 0 {
 		return
 	}
 
 	for index := range storage.segments {
-		storage.segments[index].expirations = newExpirationIndex[V](resolution)
+		storage.segments[index].expirations = newExpirationIndex[K, V](resolution)
 	}
 }
 
-func (storage *storage[V]) enableSlidingExpiration() {
+func (storage *storage[K, V]) enableSlidingExpiration() {
 	for index := range storage.segments {
 		storage.segments[index].slidingExpiration = true
 	}
 }
 
 // now returns monotonic nanoseconds elapsed since this storage was created.
-func (storage *storage[V]) now() int64 {
+func (storage *storage[K, V]) now() int64 {
 	return int64(time.Since(storage.origin))
 }
 
 // elapsedAt converts a time carrying the same monotonic clock domain into
 // storage-relative nanoseconds. It is primarily useful when a caller already
 // captured a time.Time for another purpose, such as loader duration metrics.
-func (storage *storage[V]) elapsedAt(now time.Time) int64 {
+func (storage *storage[K, V]) elapsedAt(now time.Time) int64 {
 	return int64(now.Sub(storage.origin))
 }
 
@@ -166,7 +166,7 @@ func (storage *storage[V]) elapsedAt(now time.Time) int64 {
 // deadline representation. A non-zero time at or before the storage origin is
 // represented by a negative deadline so it remains immediately expired rather
 // than being confused with NoExpiration.
-func (storage *storage[V]) deadlineAt(expiresAt time.Time) int64 {
+func (storage *storage[K, V]) deadlineAt(expiresAt time.Time) int64 {
 	if storage == nil || expiresAt.IsZero() {
 		return 0
 	}
@@ -179,12 +179,12 @@ func (storage *storage[V]) deadlineAt(expiresAt time.Time) int64 {
 	return int64(deadline)
 }
 
-func (storage *storage[V]) segmentIndex(key string) int {
+func (storage *storage[K, V]) segmentIndex(key K) int {
 	if len(storage.segments) == 1 {
 		return 0
 	}
 
-	hash := maphash.String(storage.seed, key)
+	hash := maphash.Comparable(storage.seed, key)
 
 	if storage.mask != 0 {
 		return int(hash & storage.mask)
@@ -195,27 +195,27 @@ func (storage *storage[V]) segmentIndex(key string) int {
 	)
 }
 
-func (storage *storage[V]) lookupAt(
+func (storage *storage[K, V]) lookupAt(
 	index int,
-	key string,
+	key K,
 	now int64,
 	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].lookup(key, now, stats)
 }
 
-func (storage *storage[V]) getAt(
+func (storage *storage[K, V]) getAt(
 	index int,
-	key string,
+	key K,
 	now int64,
 	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].get(key, now, stats)
 }
 
-func (storage *storage[V]) setAt(
+func (storage *storage[K, V]) setAt(
 	index int,
-	key string,
+	key K,
 	value cachedValue[V],
 	deadline int64,
 	stats *segmentStats,
@@ -223,14 +223,14 @@ func (storage *storage[V]) setAt(
 	storage.segments[index].set(key, value, deadline, stats)
 }
 
-func (storage *storage[V]) deleteAt(
+func (storage *storage[K, V]) deleteAt(
 	index int,
-	key string,
+	key K,
 ) bool {
 	return storage.segments[index].delete(key)
 }
 
-func (storage *storage[V]) deleteAll() int64 {
+func (storage *storage[K, V]) deleteAll() int64 {
 	var deleted int64
 
 	for index := range storage.segments {
@@ -240,7 +240,7 @@ func (storage *storage[V]) deleteAll() int64 {
 	return deleted
 }
 
-func (storage *storage[V]) cleanupExpiredAt(
+func (storage *storage[K, V]) cleanupExpiredAt(
 	index int,
 	now int64,
 	limit int,
@@ -249,7 +249,7 @@ func (storage *storage[V]) cleanupExpiredAt(
 	return storage.segments[index].cleanupExpired(now, limit, stats)
 }
 
-func (storage *storage[V]) cleanupExpired(
+func (storage *storage[K, V]) cleanupExpired(
 	now int64,
 	policy cleanupPolicy,
 	stats *statsCollector,
@@ -290,8 +290,8 @@ func (storage *storage[V]) cleanupExpired(
 	}
 }
 
-func (segment *storageSegment[V]) lookup(
-	key string,
+func (segment *storageSegment[K, V]) lookup(
+	key K,
 	now int64,
 	stats *segmentStats,
 ) (cachedValue[V], bool) {
@@ -318,8 +318,8 @@ func (segment *storageSegment[V]) lookup(
 	return cached, true
 }
 
-func (segment *storageSegment[V]) get(
-	key string,
+func (segment *storageSegment[K, V]) get(
+	key K,
 	now int64,
 	stats *segmentStats,
 ) (cachedValue[V], bool) {
@@ -329,8 +329,8 @@ func (segment *storageSegment[V]) get(
 	return segment.getLocked(key, now, stats)
 }
 
-func (segment *storageSegment[V]) getLocked(
-	key string,
+func (segment *storageSegment[K, V]) getLocked(
+	key K,
 	now int64,
 	stats *segmentStats,
 ) (cachedValue[V], bool) {
@@ -375,8 +375,8 @@ func (segment *storageSegment[V]) getLocked(
 	}, true
 }
 
-func (segment *storageSegment[V]) set(
-	key string,
+func (segment *storageSegment[K, V]) set(
+	key K,
 	value cachedValue[V],
 	deadline int64,
 	stats *segmentStats,
@@ -431,7 +431,7 @@ func (segment *storageSegment[V]) set(
 		return
 	}
 
-	item := &entry[V]{
+	item := &entry[K, V]{
 		key:        key,
 		value:      value.value,
 		found:      value.found,
@@ -443,7 +443,7 @@ func (segment *storageSegment[V]) set(
 	segment.pushFrontLocked(item)
 }
 
-func (segment *storageSegment[V]) delete(key string) bool {
+func (segment *storageSegment[K, V]) delete(key K) bool {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
@@ -457,7 +457,7 @@ func (segment *storageSegment[V]) delete(key string) bool {
 	return true
 }
 
-func (segment *storageSegment[V]) deleteAll() int64 {
+func (segment *storageSegment[K, V]) deleteAll() int64 {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
@@ -472,13 +472,13 @@ func (segment *storageSegment[V]) deleteAll() int64 {
 	return deleted
 }
 
-func (segment *storageSegment[V]) removeLocked(item *entry[V]) {
+func (segment *storageSegment[K, V]) removeLocked(item *entry[K, V]) {
 	segment.expirations.remove(item)
 	delete(segment.entries, item.key)
 	segment.unlinkLocked(item)
 }
 
-func (segment *storageSegment[V]) cleanupExpired(
+func (segment *storageSegment[K, V]) cleanupExpired(
 	now int64,
 	limit int,
 	stats *segmentStats,
@@ -514,7 +514,7 @@ func (segment *storageSegment[V]) cleanupExpired(
 	return removed, segment.expirations.hasDueBucket(dueID)
 }
 
-func (segment *storageSegment[V]) pushFrontLocked(item *entry[V]) {
+func (segment *storageSegment[K, V]) pushFrontLocked(item *entry[K, V]) {
 	item.previous = nil
 	item.next = segment.head
 
@@ -527,7 +527,7 @@ func (segment *storageSegment[V]) pushFrontLocked(item *entry[V]) {
 	segment.head = item
 }
 
-func (segment *storageSegment[V]) moveToFrontLocked(item *entry[V]) {
+func (segment *storageSegment[K, V]) moveToFrontLocked(item *entry[K, V]) {
 	if segment.head == item {
 		return
 	}
@@ -536,7 +536,7 @@ func (segment *storageSegment[V]) moveToFrontLocked(item *entry[V]) {
 	segment.pushFrontLocked(item)
 }
 
-func (segment *storageSegment[V]) unlinkLocked(item *entry[V]) {
+func (segment *storageSegment[K, V]) unlinkLocked(item *entry[K, V]) {
 	if item.previous != nil {
 		item.previous.next = item.next
 	} else {

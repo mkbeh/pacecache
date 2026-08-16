@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
+	"github.com/mkbeh/pacecache/internal/singleflight"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 	NoExpiration time.Duration = -1
 )
 
-// Cache is a bounded in-process read-through cache for values of type V.
+// Cache is a bounded in-process read-through cache for keys of type K and values of type V.
 //
 // Cache uses segmented exact LRU eviction and TTL expiration. Positive entries
 // may optionally use sliding expiration, while negative results always use
@@ -29,15 +29,15 @@ const (
 // singleflight.
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
-type Cache[V any] struct {
+type Cache[K comparable, V any] struct {
 	name string
 
-	store  *storage[V]
-	states []cacheState
+	store  *storage[K, V]
+	states []cacheState[K, V]
 	stats  *statsCollector
 
 	cleanupPolicy cleanupPolicy
-	cleanup       *cleanupWorker[V]
+	cleanup       *cleanupWorker[K, V]
 
 	metrics   MetricsRegistration
 	closeOnce sync.Once
@@ -52,15 +52,15 @@ type Cache[V any] struct {
 // mu establishes ordering between singleflight registration, cache
 // publication, and invalidation. generation prevents a load registered before
 // an invalidation barrier from repopulating the cache afterward.
-type cacheState struct {
+type cacheState[K comparable, V any] struct {
 	mu sync.RWMutex
 
 	generation uint64
-	group      *singleflight.Group
+	group      *singleflight.Group[K, loadResult[V]]
 }
 
-type invalidationTarget struct {
-	key   string
+type invalidationTarget[K comparable] struct {
+	key   K
 	index int
 }
 
@@ -74,13 +74,13 @@ type invalidationTarget struct {
 //
 // If metrics or background cleanup are configured, Close must be called to
 // release the associated resources.
-func New[V any](name string, options ...Option) (*Cache[V], error) {
+func New[K comparable, V any](name string, options ...Option) (*Cache[K, V], error) {
 	settings, err := newCacheSettings(name, options...)
 	if err != nil {
 		return nil, fmt.Errorf("pacecache: %w", err)
 	}
 
-	store := newStorage[V](
+	store := newStorage[K, V](
 		settings.maxEntries,
 		settings.segmentCount,
 		settings.slidingExpiration,
@@ -91,11 +91,11 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 		entryBudget: settings.cleanupEntryBudget,
 	}
 
-	cache := &Cache[V]{
+	cache := &Cache[K, V]{
 		name: settings.name,
 
 		store:  store,
-		states: newCacheStates(len(store.segments)),
+		states: newCacheStates[K, V](len(store.segments)),
 		stats:  newStatsCollector(len(store.segments)),
 
 		cleanupPolicy: policy,
@@ -123,7 +123,7 @@ func New[V any](name string, options ...Option) (*Cache[V], error) {
 }
 
 // Name returns the logical cache name.
-func (cache *Cache[V]) Name() string {
+func (cache *Cache[K, V]) Name() string {
 	if cache == nil {
 		return ""
 	}
@@ -140,7 +140,7 @@ func (cache *Cache[V]) Name() string {
 //
 // Close does not clear or disable the cache. Cache operations remain available,
 // but stopped background resources are not restarted.
-func (cache *Cache[V]) Close() {
+func (cache *Cache[K, V]) Close() {
 	if cache == nil {
 		return
 	}
@@ -168,7 +168,7 @@ func (cache *Cache[V]) Close() {
 // by CleanupExpired, or by background cleanup when it is enabled. When sliding
 // expiration is enabled, a live positive hit refreshes the entry using the TTL
 // with which it was stored.
-func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
+func (cache *Cache[K, V]) Get(key K) (V, LookupStatus) {
 	var zero V
 
 	if !cache.initialized() {
@@ -203,9 +203,9 @@ func (cache *Cache[V]) Get(key string) (V, LookupStatus) {
 //
 // The returned found value describes whether the underlying value exists; it
 // is false for both a freshly loaded and a cached negative result.
-func (cache *Cache[V]) GetOrLoad(
+func (cache *Cache[K, V]) GetOrLoad(
 	ctx context.Context,
-	key string,
+	key K,
 	loader Loader[V],
 ) (V, bool, error) {
 	var zero V
@@ -241,7 +241,7 @@ func (cache *Cache[V]) GetOrLoad(
 
 	resultChannel := group.DoChan(
 		key,
-		func() (any, error) {
+		func() (loadResult[V], error) {
 			// Another caller may have populated the cache between the initial
 			// lookup and this call becoming the singleflight owner.
 			if cached, ok := cache.store.getAt(index, key, cache.store.now(), stats); ok {
@@ -260,7 +260,7 @@ func (cache *Cache[V]) GetOrLoad(
 			cache.stats.recordLoad(index, found, err, finishedAt.Sub(startedAt))
 
 			if err != nil {
-				return nil, err
+				return loadResult[V]{}, err
 			}
 
 			if !found {
@@ -305,12 +305,7 @@ func (cache *Cache[V]) GetOrLoad(
 			return zero, false, result.Err
 		}
 
-		loaded, ok := result.Val.(loadResult[V])
-		if !ok {
-			return zero, false, errors.New("pacecache: unexpected singleflight result type")
-		}
-
-		return loaded.value, loaded.found, nil
+		return result.Val.value, result.Val.found, nil
 	}
 }
 
@@ -323,8 +318,8 @@ func (cache *Cache[V]) GetOrLoad(
 // Set acts as a publication barrier: loads registered before Set may still
 // return to callers already waiting for them, but cannot overwrite the
 // explicitly stored value afterward.
-func (cache *Cache[V]) Set(
-	key string,
+func (cache *Cache[K, V]) Set(
+	key K,
 	value V,
 	expiration time.Duration,
 ) {
@@ -354,7 +349,7 @@ func (cache *Cache[V]) Set(
 // Missing keys are ignored. Duplicate keys are allowed.
 //
 // Invalidate is a no-op when called without keys or on an uninitialized Cache.
-func (cache *Cache[V]) Invalidate(keys ...string) {
+func (cache *Cache[K, V]) Invalidate(keys ...K) {
 	if !cache.initialized() ||
 		len(keys) == 0 {
 		return
@@ -370,10 +365,10 @@ func (cache *Cache[V]) Invalidate(keys ...string) {
 		return
 	}
 
-	targets := make([]invalidationTarget, len(keys))
+	targets := make([]invalidationTarget[K], len(keys))
 
 	for index, key := range keys {
-		targets[index] = invalidationTarget{
+		targets[index] = invalidationTarget[K]{
 			key:   key,
 			index: cache.store.segmentIndex(key),
 		}
@@ -388,7 +383,7 @@ func (cache *Cache[V]) Invalidate(keys ...string) {
 	// This keeps multi-key invalidation and InvalidateAll deadlock-free.
 	slices.SortFunc(
 		targets,
-		func(left, right invalidationTarget) int {
+		func(left, right invalidationTarget[K]) int {
 			return cmp.Compare(left.index, right.index)
 		},
 	)
@@ -459,7 +454,7 @@ func (cache *Cache[V]) Invalidate(keys ...string) {
 // already expired but which have not yet been removed.
 //
 // InvalidateAll is a no-op on an uninitialized Cache.
-func (cache *Cache[V]) InvalidateAll() {
+func (cache *Cache[K, V]) InvalidateAll() {
 	if !cache.initialized() {
 		return
 	}
@@ -472,7 +467,7 @@ func (cache *Cache[V]) InvalidateAll() {
 		state := &cache.states[index]
 
 		state.generation++
-		state.group = &singleflight.Group{}
+		state.group = &singleflight.Group[K, loadResult[V]]{}
 	}
 
 	invalidated := cache.store.deleteAll()
@@ -495,7 +490,7 @@ func (cache *Cache[V]) InvalidateAll() {
 // physical reclamation also depends on when cleanup runs. Manual cleanup uses
 // the configured cleanup batch size and entry budget, yielding cooperatively
 // between quanta until all entries due at the start of the call are drained.
-func (cache *Cache[V]) CleanupExpired() int64 {
+func (cache *Cache[K, V]) CleanupExpired() int64 {
 	if !cache.initialized() {
 		return 0
 	}
@@ -507,7 +502,7 @@ func (cache *Cache[V]) CleanupExpired() int64 {
 	)
 }
 
-func (cache *Cache[V]) invalidateOne(index int, key string) bool {
+func (cache *Cache[K, V]) invalidateOne(index int, key K) bool {
 	state := &cache.states[index]
 
 	state.mu.Lock()
@@ -522,9 +517,9 @@ func (cache *Cache[V]) invalidateOne(index int, key string) bool {
 	return removed
 }
 
-func (cache *Cache[V]) storeLoaded(
+func (cache *Cache[K, V]) storeLoaded(
 	index int,
-	key string,
+	key K,
 	loaded loadResult[V],
 	now int64,
 ) {
@@ -545,9 +540,9 @@ func (cache *Cache[V]) storeLoaded(
 	}
 }
 
-func (cache *Cache[V]) storePositive(
+func (cache *Cache[K, V]) storePositive(
 	index int,
-	key string,
+	key K,
 	value V,
 	expiration time.Duration,
 	now int64,
@@ -567,7 +562,7 @@ func (cache *Cache[V]) storePositive(
 	)
 }
 
-func (cache *Cache[V]) effectiveExpirationTTL(expiration time.Duration) time.Duration {
+func (cache *Cache[K, V]) effectiveExpirationTTL(expiration time.Duration) time.Duration {
 	ttl := expiration
 
 	if ttl == DefaultExpiration {
@@ -610,13 +605,13 @@ func jitteredTTL(ttl, jitter time.Duration) time.Duration {
 	)
 }
 
-func (cache *Cache[V]) registerMetrics(metrics Metrics) error {
+func (cache *Cache[K, V]) registerMetrics(metrics Metrics) error {
 	if metrics == nil {
 		return nil
 	}
 
 	registration, err := metrics.RegisterCache(
-		cacheStatsProvider[V]{
+		cacheStatsProvider[K, V]{
 			cache: cache,
 		},
 	)
@@ -629,17 +624,17 @@ func (cache *Cache[V]) registerMetrics(metrics Metrics) error {
 	return nil
 }
 
-func (cache *Cache[V]) initialized() bool {
+func (cache *Cache[K, V]) initialized() bool {
 	return cache != nil &&
 		cache.store != nil &&
 		cache.stats != nil
 }
 
-func newCacheStates(count int) []cacheState {
-	states := make([]cacheState, count)
+func newCacheStates[K comparable, V any](count int) []cacheState[K, V] {
+	states := make([]cacheState[K, V], count)
 
 	for index := range states {
-		states[index].group = &singleflight.Group{}
+		states[index].group = &singleflight.Group[K, loadResult[V]]{}
 	}
 
 	return states

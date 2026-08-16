@@ -113,7 +113,7 @@ type segmentStats struct {
 }
 
 // Stats returns a detached snapshot of the current cache statistics.
-func (cache *Cache[V]) Stats() Stats {
+func (cache *Cache[K, V]) Stats() Stats {
 	if !cache.initialized() {
 		return Stats{}
 	}

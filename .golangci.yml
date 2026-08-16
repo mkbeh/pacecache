@@ -154,6 +154,14 @@ linters:
       - examples/
       - _tmp/
     rules:
+      # Keep the generic singleflight port structurally aligned with
+      # golang.org/x/sync/singleflight.
+      - path: ^internal/singleflight/
+        linters:
+          - errorlint
+          - gocritic
+          - revive
+
       - path: _test\.go
         linters:
           - revive

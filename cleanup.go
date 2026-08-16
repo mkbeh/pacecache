@@ -15,8 +15,8 @@ type cleanupPolicy struct {
 	entryBudget int
 }
 
-type cleanupWorker[V any] struct {
-	store *storage[V]
+type cleanupWorker[K comparable, V any] struct {
+	store *storage[K, V]
 	stats *statsCollector
 
 	policy   cleanupPolicy
@@ -28,13 +28,13 @@ type cleanupWorker[V any] struct {
 	nextSegment     int
 }
 
-func newCleanupWorker[V any](
-	store *storage[V],
+func newCleanupWorker[K comparable, V any](
+	store *storage[K, V],
 	stats *statsCollector,
 	policy cleanupPolicy,
 	interval time.Duration,
-) *cleanupWorker[V] {
-	return &cleanupWorker[V]{
+) *cleanupWorker[K, V] {
+	return &cleanupWorker[K, V]{
 		store:           store,
 		stats:           stats,
 		policy:          policy,
@@ -45,16 +45,16 @@ func newCleanupWorker[V any](
 	}
 }
 
-func (worker *cleanupWorker[V]) start() {
+func (worker *cleanupWorker[K, V]) start() {
 	go worker.run()
 }
 
-func (worker *cleanupWorker[V]) close() {
+func (worker *cleanupWorker[K, V]) close() {
 	close(worker.stop)
 	<-worker.done
 }
 
-func (worker *cleanupWorker[V]) run() {
+func (worker *cleanupWorker[K, V]) run() {
 	timer := time.NewTimer(worker.interval)
 	defer timer.Stop()
 	defer close(worker.done)
@@ -81,7 +81,7 @@ func (worker *cleanupWorker[V]) run() {
 // It returns true when there may still be expired entries ready for physical
 // removal. The worker reschedules another quantum after a short cooperative
 // delay instead of draining an unbounded backlog in one call.
-func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
+func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 	segmentCount := len(worker.store.segments)
 	if segmentCount == 0 {
 		return false
@@ -169,11 +169,11 @@ func (worker *cleanupWorker[V]) cleanupQuantum(now int64) bool {
 	return false
 }
 
-func (worker *cleanupWorker[V]) continuationDelay() time.Duration {
+func (worker *cleanupWorker[K, V]) continuationDelay() time.Duration {
 	return min(worker.interval, cleanupContinuationDelay)
 }
 
-func (worker *cleanupWorker[V]) stopped() bool {
+func (worker *cleanupWorker[K, V]) stopped() bool {
 	select {
 	case <-worker.stop:
 		return true

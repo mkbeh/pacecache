@@ -10,12 +10,12 @@ import (
 )
 
 type user struct {
-	ID   string
+	ID   int64
 	Name string
 }
 
 type userRepository struct {
-	users map[string]user
+	users map[int64]user
 	loads int
 }
 
@@ -27,15 +27,15 @@ func main() {
 
 func run(ctx context.Context) error {
 	repository := &userRepository{
-		users: map[string]user{
-			"42": {
-				ID:   "42",
+		users: map[int64]user{
+			42: {
+				ID:   42,
 				Name: "Ada",
 			},
 		},
 	}
 
-	users, err := pacecache.New[user](
+	users, err := pacecache.New[int64, user](
 		"users",
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(30*time.Second),
@@ -47,7 +47,7 @@ func run(ctx context.Context) error {
 	}
 	defer users.Close()
 
-	loadUser := func(id string) (user, bool, error) {
+	loadUser := func(id int64) (user, bool, error) {
 		return users.GetOrLoad(
 			ctx,
 			id,
@@ -58,7 +58,7 @@ func run(ctx context.Context) error {
 	}
 
 	// The first lookup loads the user from the underlying repository.
-	first, found, err := loadUser("42")
+	first, found, err := loadUser(42)
 	if err != nil {
 		return fmt.Errorf("load user: %w", err)
 	}
@@ -67,7 +67,7 @@ func run(ctx context.Context) error {
 	fmt.Printf("- first lookup: found=%t user=%+v\n", found, first)
 
 	// The second lookup is served from the cache.
-	second, found, err := loadUser("42")
+	second, found, err := loadUser(42)
 	if err != nil {
 		return fmt.Errorf("load cached user: %w", err)
 	}
@@ -76,7 +76,7 @@ func run(ctx context.Context) error {
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	// Not-found results are cached using the configured negative TTL.
-	_, found, err = loadUser("404")
+	_, found, err = loadUser(404)
 	if err != nil {
 		return fmt.Errorf("load missing user: %w", err)
 	}
@@ -85,7 +85,7 @@ func run(ctx context.Context) error {
 	fmt.Println("negative cache:")
 	fmt.Printf("- first lookup: found=%t\n", found)
 
-	_, found, err = loadUser("404")
+	_, found, err = loadUser(404)
 	if err != nil {
 		return fmt.Errorf("load cached missing user: %w", err)
 	}
@@ -94,9 +94,9 @@ func run(ctx context.Context) error {
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	// Explicit invalidation forces the next lookup to reload the value.
-	users.Invalidate("42")
+	users.Invalidate(42)
 
-	reloaded, found, err := loadUser("42")
+	reloaded, found, err := loadUser(42)
 	if err != nil {
 		return fmt.Errorf("reload invalidated user: %w", err)
 	}
@@ -133,7 +133,7 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-func (repository *userRepository) find(ctx context.Context, id string) (user, bool, error) {
+func (repository *userRepository) find(ctx context.Context, id int64) (user, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return user{}, false, err
 	}

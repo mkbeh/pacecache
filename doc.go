@@ -1,6 +1,7 @@
 // Package pacecache provides bounded in-process read-through caching.
 //
-// Cache entries use TTL expiration, optional sliding expiration and TTL jitter,
+// Cache keys may use any comparable Go type. Entries use TTL expiration,
+// optional sliding expiration and TTL jitter,
 // LRU eviction, negative caching, duplicate load suppression, and explicit
 // invalidation. Invalidation prevents loads started before an invalidation
 // barrier from repopulating invalidated entries.

@@ -13,7 +13,7 @@ import (
 )
 
 type user struct {
-	ID   string
+	ID   int64
 	Name string
 }
 
@@ -48,7 +48,7 @@ func run(ctx context.Context) error {
 		paceotel.WithMeterProvider(meterProvider),
 	)
 
-	users, err := pacecache.New[user](
+	users, err := pacecache.New[int64, user](
 		"users",
 		pacecache.WithTTL(time.Minute),
 		pacecache.WithNegativeTTL(10*time.Second),
@@ -61,7 +61,7 @@ func run(ctx context.Context) error {
 
 	loadUser := func(ctx context.Context) (user, bool, error) {
 		return user{
-			ID:   "42",
+			ID:   42,
 			Name: "Ada",
 		}, true, nil
 	}
@@ -69,7 +69,7 @@ func run(ctx context.Context) error {
 	// 3. Generate cache activity.
 	_, _, err = users.GetOrLoad(
 		ctx,
-		"42",
+		42,
 		loadUser,
 	)
 	if err != nil {
@@ -78,18 +78,18 @@ func run(ctx context.Context) error {
 
 	_, _, err = users.GetOrLoad(
 		ctx,
-		"42",
+		42,
 		loadUser,
 	)
 	if err != nil {
 		return fmt.Errorf("load cached user: %w", err)
 	}
 
-	users.Invalidate("42")
+	users.Invalidate(42)
 
 	_, _, err = users.GetOrLoad(
 		ctx,
-		"42",
+		42,
 		loadUser,
 	)
 	if err != nil {
