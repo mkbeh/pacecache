@@ -47,16 +47,16 @@ type Cache[K comparable, V any] struct {
 	negativeTTL time.Duration
 }
 
-// cacheState coordinates loads and invalidation for one storage segment.
+// cacheState coordinates loads and mutations for one storage segment.
 //
 // mu establishes ordering between singleflight registration, cache
-// publication, and invalidation. generation prevents a load registered before
-// an invalidation barrier from repopulating the cache afterward.
+// publication, and mutations. The singleflight group tracks publication state
+// per active key so mutating one key never invalidates loads for another key in
+// the same storage segment.
 type cacheState[K comparable, V any] struct {
 	mu sync.RWMutex
 
-	generation uint64
-	group      *singleflight.Group[K, loadResult[V]]
+	group *singleflight.Group[K, loadResult[V]]
 }
 
 type invalidationTarget[K comparable] struct {
@@ -250,6 +250,11 @@ func (cache *Cache[K, V]) Get(key K) (V, LookupStatus) {
 // context of the caller that starts the shared load. Other callers may stop
 // waiting independently when their own contexts are canceled.
 //
+// Set and invalidation act as publication barriers for the same key. A load
+// already in flight may still return to callers that joined it, but its result
+// is not cached if that key was changed before publication. Mutations of other
+// keys do not affect the load, even when those keys share the same segment.
+//
 // The returned found value describes whether the underlying value exists; it
 // is false for both a freshly loaded and a cached negative result.
 func (cache *Cache[K, V]) GetOrLoad(
@@ -280,17 +285,14 @@ func (cache *Cache[K, V]) GetOrLoad(
 
 	state := &cache.states[index]
 
-	// Registration and generation selection must be atomic with respect to
-	// invalidation for this state segment. DoChan only registers or starts the
-	// shared call; the loader itself executes outside state.mu.
+	// Singleflight registration must be atomic with respect to mutations for
+	// this state segment. DoChan only registers or starts the shared call; the
+	// loader itself executes outside state.mu.
 	state.mu.RLock()
 
-	generation := state.generation
-	group := state.group
-
-	resultChannel := group.DoChan(
+	resultChannel := state.group.DoChan(
 		key,
-		func() (loadResult[V], error) {
+		func(callState singleflight.CallState) (loadResult[V], error) {
 			// Another caller may have populated the cache between the initial
 			// lookup and this call becoming the singleflight owner.
 			if cached, ok := cache.store.getAt(index, key, cache.store.now(), stats); ok {
@@ -323,13 +325,12 @@ func (cache *Cache[K, V]) GetOrLoad(
 				found: found,
 			}
 
-			// Generation validation and publication are atomic with respect to
-			// invalidation for this state segment. A pre-invalidation load may
-			// still return to callers that already joined it, but cannot
-			// repopulate the cache after the barrier.
+			// Publication is atomic with respect to Set and invalidation. A load
+			// forgotten by a mutation of this key may still return to callers that
+			// already joined it, but it cannot repopulate the cache afterward.
 			state.mu.RLock()
 
-			if state.generation == generation {
+			if !callState.Forgotten() {
 				cache.storeLoaded(index, key, loaded, cache.store.elapsedAt(finishedAt))
 			}
 
@@ -381,7 +382,6 @@ func (cache *Cache[K, V]) Set(
 
 	state.mu.Lock()
 
-	state.generation++
 	state.group.Forget(key)
 
 	cache.storePositive(index, key, value, expiration, cache.store.now())
@@ -449,21 +449,6 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 		previous = target.index
 	}
 
-	// Once every affected state is locked, advance each generation. Loads that
-	// registered before this barrier may finish for existing waiters, but they
-	// cannot publish into any affected segment afterward.
-	previous = -1
-
-	for _, target := range targets {
-		if target.index == previous {
-			continue
-		}
-
-		cache.states[target.index].generation++
-
-		previous = target.index
-	}
-
 	var invalidated int64
 
 	for _, target := range targets {
@@ -513,10 +498,7 @@ func (cache *Cache[K, V]) InvalidateAll() {
 	}
 
 	for index := range cache.states {
-		state := &cache.states[index]
-
-		state.generation++
-		state.group = &singleflight.Group[K, loadResult[V]]{}
+		cache.states[index].group.ForgetAll()
 	}
 
 	invalidated := cache.store.deleteAll()
@@ -556,7 +538,6 @@ func (cache *Cache[K, V]) invalidateOne(index int, key K) bool {
 
 	state.mu.Lock()
 
-	state.generation++
 	state.group.Forget(key)
 
 	removed := cache.store.deleteAt(index, key)

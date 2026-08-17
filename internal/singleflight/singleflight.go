@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 )
 
 // errGoexit indicates runtime.Goexit was called in
@@ -51,10 +52,11 @@ func newPanicError(v any) error {
 	if line := bytes.IndexByte(stack[:], '\n'); line >= 0 {
 		stack = stack[line+1:]
 	}
+
 	return &panicError{value: v, stack: stack}
 }
 
-// call is an in-flight or completed singleflight.Do call
+// call is an in-flight or completed singleflight.Do call.
 type call[V any] struct {
 	wg sync.WaitGroup
 
@@ -63,11 +65,29 @@ type call[V any] struct {
 	val V
 	err error
 
-	// These fields are read and written with the singleflight
-	// mutex held before the WaitGroup is done, and are read but
-	// not written after the WaitGroup is done.
-	dups  int
-	chans []chan<- Result[V]
+	// dups and chans are read and written with the singleflight mutex held
+	// before the WaitGroup is done, and are read but not written after it is
+	// done.
+	dups uint32
+	// forgotten is set when Forget or ForgetAll removes this call from the
+	// active group before it completes. It remains reachable by the goroutine
+	// executing the call and by callers already waiting for its result.
+	forgotten atomic.Bool
+	chans     []chan<- Result[V]
+}
+
+// CallState exposes the state of the singleflight call executing fn.
+//
+// A call is forgotten when Forget or ForgetAll removes it from the active
+// group before fn completes. Future calls for the same key may then start new
+// work independently of the forgotten call.
+type CallState struct {
+	forgotten *atomic.Bool
+}
+
+// Forgotten reports whether this call has been forgotten by the group.
+func (state CallState) Forgotten() bool {
+	return state.forgotten != nil && state.forgotten.Load()
 }
 
 // Group represents a class of work and forms a namespace in
@@ -92,12 +112,15 @@ type Result[V any] struct {
 // The return value shared indicates whether v was given to multiple callers.
 func (g *Group[K, V]) Do(key K, fn func() (V, error)) (v V, err error, shared bool) {
 	g.mu.Lock()
+
 	if g.m == nil {
 		g.m = make(map[K]*call[V])
 	}
+
 	if c, ok := g.m[key]; ok {
 		c.dups++
 		g.mu.Unlock()
+
 		c.wg.Wait()
 
 		if e, ok := c.err.(*panicError); ok {
@@ -105,45 +128,66 @@ func (g *Group[K, V]) Do(key K, fn func() (V, error)) (v V, err error, shared bo
 		} else if c.err == errGoexit {
 			runtime.Goexit()
 		}
+
 		return c.val, c.err, true
 	}
+
 	c := new(call[V])
 	c.wg.Add(1)
 	g.m[key] = c
+
 	g.mu.Unlock()
 
 	g.doCall(c, key, fn)
+
 	return c.val, c.err, c.dups > 0
 }
 
-// DoChan is like Do but returns a channel that will receive the
-// results when they are ready.
+// DoChan is like Do but returns a channel that will receive the results when
+// they are ready. The function executing the shared call receives its
+// CallState so it can observe whether the call was forgotten before completion.
 //
 // The returned channel will not be closed.
-func (g *Group[K, V]) DoChan(key K, fn func() (V, error)) <-chan Result[V] {
+func (g *Group[K, V]) DoChan(
+	key K,
+	fn func(CallState) (V, error),
+) <-chan Result[V] {
 	ch := make(chan Result[V], 1)
+
 	g.mu.Lock()
+
 	if g.m == nil {
 		g.m = make(map[K]*call[V])
 	}
+
 	if c, ok := g.m[key]; ok {
 		c.dups++
 		c.chans = append(c.chans, ch)
+
 		g.mu.Unlock()
+
 		return ch
 	}
-	c := &call[V]{chans: []chan<- Result[V]{ch}}
+
+	c := &call[V]{
+		chans: []chan<- Result[V]{ch},
+	}
 	c.wg.Add(1)
 	g.m[key] = c
+
 	g.mu.Unlock()
 
-	go g.doCall(c, key, fn)
+	go g.doCallState(c, key, fn)
 
 	return ch
 }
 
-// doCall handles the single call for a key.
-func (g *Group[K, V]) doCall(c *call[V], key K, fn func() (V, error)) {
+// doCall handles a synchronous singleflight call for a key.
+func (g *Group[K, V]) doCall(
+	c *call[V],
+	key K,
+	fn func() (V, error),
+) {
 	normalReturn := false
 	recovered := false
 
@@ -157,7 +201,9 @@ func (g *Group[K, V]) doCall(c *call[V], key K, fn func() (V, error)) {
 
 		g.mu.Lock()
 		defer g.mu.Unlock()
+
 		c.wg.Done()
+
 		if g.m[key] == c {
 			delete(g.m, key)
 		}
@@ -172,11 +218,15 @@ func (g *Group[K, V]) doCall(c *call[V], key K, fn func() (V, error)) {
 				panic(e)
 			}
 		} else if c.err == errGoexit {
-			// Already in the process of goexit, no need to call again
+			// Already in the process of goexit, no need to call again.
 		} else {
-			// Normal return
+			// Normal return.
 			for _, ch := range c.chans {
-				ch <- Result[V]{c.val, c.err, c.dups > 0}
+				ch <- Result[V]{
+					Val:    c.val,
+					Err:    c.err,
+					Shared: c.dups > 0,
+				}
 			}
 		}
 	}()
@@ -206,11 +256,112 @@ func (g *Group[K, V]) doCall(c *call[V], key K, fn func() (V, error)) {
 	}
 }
 
-// Forget tells the singleflight to forget about a key. Future calls
-// to Do for this key will call the function rather than waiting for
-// an earlier call to complete.
+// doCallState handles an asynchronous singleflight call whose function needs
+// to observe whether the call was forgotten while it was in flight.
+func (g *Group[K, V]) doCallState(
+	c *call[V],
+	key K,
+	fn func(CallState) (V, error),
+) {
+	normalReturn := false
+	recovered := false
+
+	// use double-defer to distinguish panic from runtime.Goexit,
+	// more details see https://golang.org/cl/134395
+	defer func() {
+		// the given function invoked runtime.Goexit
+		if !normalReturn && !recovered {
+			c.err = errGoexit
+		}
+
+		g.mu.Lock()
+		defer g.mu.Unlock()
+
+		c.wg.Done()
+
+		if g.m[key] == c {
+			delete(g.m, key)
+		}
+
+		if e, ok := c.err.(*panicError); ok {
+			// In order to prevent the waiting channels from being blocked forever,
+			// needs to ensure that this panic cannot be recovered.
+			if len(c.chans) > 0 {
+				go panic(e)
+				select {} // Keep this goroutine around so that it will appear in the crash dump.
+			} else {
+				panic(e)
+			}
+		} else if c.err == errGoexit {
+			// Already in the process of goexit, no need to call again.
+		} else {
+			// Normal return.
+			for _, ch := range c.chans {
+				ch <- Result[V]{
+					Val:    c.val,
+					Err:    c.err,
+					Shared: c.dups > 0,
+				}
+			}
+		}
+	}()
+
+	func() {
+		defer func() {
+			if !normalReturn {
+				// Ideally, we would wait to take a stack trace until we've determined
+				// whether this is a panic or a runtime.Goexit.
+				//
+				// Unfortunately, the only way we can distinguish the two is to see
+				// whether the recover stopped the goroutine from terminating, and by
+				// the time we know that, the part of the stack trace relevant to the
+				// panic has been discarded.
+				if r := recover(); r != nil {
+					c.err = newPanicError(r)
+				}
+			}
+		}()
+
+		c.val, c.err = fn(
+			CallState{
+				forgotten: &c.forgotten,
+			},
+		)
+		normalReturn = true
+	}()
+
+	if !normalReturn {
+		recovered = true
+	}
+}
+
+// Forget tells the singleflight to forget about a key. Future calls to Do or
+// DoChan for this key will start new work rather than waiting for an earlier
+// call to complete. An active DoChan call observes the transition through its
+// CallState.
 func (g *Group[K, V]) Forget(key K) {
 	g.mu.Lock()
-	delete(g.m, key)
+
+	if c, ok := g.m[key]; ok {
+		c.forgotten.Store(true)
+		delete(g.m, key)
+	}
+
+	g.mu.Unlock()
+}
+
+// ForgetAll tells the singleflight to forget every active key. Future calls
+// may start new work without waiting for calls that were active at the time of
+// ForgetAll. Active DoChan calls observe the transition through their
+// CallState.
+func (g *Group[K, V]) ForgetAll() {
+	g.mu.Lock()
+
+	for _, c := range g.m {
+		c.forgotten.Store(true)
+	}
+
+	clear(g.m)
+
 	g.mu.Unlock()
 }
