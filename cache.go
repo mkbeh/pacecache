@@ -290,22 +290,27 @@ func (cache *Cache[K, V]) GetEntry(key K) (Entry[V], LookupStatus) {
 // ErrLoadSuperseded. Mutations of other keys do not affect the load, even when
 // those keys share the same segment.
 //
-// The returned found value describes whether the underlying value exists; it
-// is false for both a freshly loaded and a cached negative result. When err is
-// non-nil, the returned value is the zero value of V and found is false.
+// LookupHit is returned for a positive cached or successfully published value.
+// LookupNegativeHit is returned when a cached negative entry exists or a
+// negative loader result is published because negative caching is enabled.
+// If loader reports found=false while negative caching is disabled, no cache
+// entry is created and GetOrLoad returns LookupMiss.
+//
+// When err is non-nil, the returned value is the zero value of V and status is
+// LookupMiss.
 func (cache *Cache[K, V]) GetOrLoad(
 	ctx context.Context,
 	key K,
 	loader Loader[V],
-) (V, bool, error) {
+) (V, LookupStatus, error) {
 	result, err := cache.getOrLoad(ctx, key, loader)
 	if err != nil {
 		var zero V
 
-		return zero, false, err
+		return zero, LookupMiss, err
 	}
 
-	return result.value, result.status == LookupHit, nil
+	return result.value, result.status, nil
 }
 
 // GetOrLoadEntry returns an immutable cache entry snapshot for key or obtains

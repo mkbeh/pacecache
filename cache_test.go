@@ -45,8 +45,8 @@ func TestCacheZeroValueAndNilReceiver(t *testing.T) {
 			loader := func(context.Context) (int, bool, error) {
 				return 1, true, nil
 			}
-			if value, found, err := cache.GetOrLoad(context.Background(), "key", loader); value != 0 || found || err == nil || err.Error() != "pacecache: cache is not initialized" {
-				t.Fatalf("GetOrLoad() = (%d, %t, %v)", value, found, err)
+			if value, status, err := cache.GetOrLoad(context.Background(), "key", loader); value != 0 || status != LookupMiss || err == nil || err.Error() != "pacecache: cache is not initialized" {
+				t.Fatalf("GetOrLoad() = (%d, %v, %v)", value, status, err)
 			}
 			if entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", loader); entry != (Entry[int]{}) || status != LookupMiss || err == nil || err.Error() != "pacecache: cache is not initialized" {
 				t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v)", entry, status, err)
@@ -402,9 +402,9 @@ func TestCacheGetOrLoadPositive(t *testing.T) {
 		return 42, true, nil
 	}
 
-	value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
-	if err != nil || !found || value != 42 {
-		t.Fatalf("GetOrLoad() = (%d, %t, %v)", value, found, err)
+	value, status, err := cache.GetOrLoad(context.Background(), "key", loader)
+	if err != nil || status != LookupHit || value != 42 {
+		t.Fatalf("GetOrLoad() = (%d, %v, %v)", value, status, err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("loader calls = %d, want 1", calls.Load())
@@ -447,9 +447,9 @@ func TestCacheGetOrLoadNegative(t *testing.T) {
 			return 99, false, nil
 		}
 
-		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
-		if err != nil || found || value != 0 {
-			t.Fatalf("GetOrLoad() = (%d, %t, %v), want (0, false, nil)", value, found, err)
+		value, status, err := cache.GetOrLoad(context.Background(), "key", loader)
+		if err != nil || status != LookupNegativeHit || value != 0 {
+			t.Fatalf("GetOrLoad() = (%d, %v, %v), want (0, LookupNegativeHit, nil)", value, status, err)
 		}
 
 		entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", loader)
@@ -485,9 +485,9 @@ func TestCacheGetOrLoadNegative(t *testing.T) {
 		if err != nil || status != LookupMiss || entry != (Entry[int]{}) {
 			t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v), want zero miss", entry, status, err)
 		}
-		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
-		if err != nil || found || value != 0 {
-			t.Fatalf("GetOrLoad() = (%d, %t, %v)", value, found, err)
+		value, status, err := cache.GetOrLoad(context.Background(), "key", loader)
+		if err != nil || status != LookupMiss || value != 0 {
+			t.Fatalf("GetOrLoad() = (%d, %v, %v), want (0, LookupMiss, nil)", value, status, err)
 		}
 		if calls.Load() != 2 {
 			t.Fatalf("loader calls = %d, want 2", calls.Load())
@@ -524,9 +524,9 @@ func TestCacheGetOrLoadValidationErrorsAndCancellation(t *testing.T) {
 		return 99, true, sentinel
 	}
 
-	value, found, err := cache.GetOrLoad(context.Background(), "error", failing)
-	if value != 0 || found || !errors.Is(err, sentinel) {
-		t.Fatalf("failing GetOrLoad() = (%d, %t, %v)", value, found, err)
+	value, status, err := cache.GetOrLoad(context.Background(), "error", failing)
+	if value != 0 || status != LookupMiss || !errors.Is(err, sentinel) {
+		t.Fatalf("failing GetOrLoad() = (%d, %v, %v)", value, status, err)
 	}
 	if _, status := cache.Get("error"); status != LookupMiss {
 		t.Fatalf("error result status = %v, want LookupMiss", status)
@@ -540,22 +540,22 @@ func TestCacheGetOrLoadValidationErrorsAndCancellation(t *testing.T) {
 	cancel()
 
 	var canceledCalls atomic.Int64
-	if value, found, err := cache.GetOrLoad(ctx, "canceled-miss", func(context.Context) (int, bool, error) {
+	if value, status, err := cache.GetOrLoad(ctx, "canceled-miss", func(context.Context) (int, bool, error) {
 		canceledCalls.Add(1)
 		return 1, true, nil
-	}); value != 0 || found || !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled miss = (%d, %t, %v)", value, found, err)
+	}); value != 0 || status != LookupMiss || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled miss = (%d, %v, %v)", value, status, err)
 	}
 	if canceledCalls.Load() != 0 {
 		t.Fatalf("loader calls for canceled miss = %d, want 0", canceledCalls.Load())
 	}
 
 	cache.Set("resident", 7, NoExpiration)
-	if value, found, err := cache.GetOrLoad(ctx, "resident", func(context.Context) (int, bool, error) {
+	if value, status, err := cache.GetOrLoad(ctx, "resident", func(context.Context) (int, bool, error) {
 		t.Fatal("loader called for resident value")
 		return 0, false, nil
-	}); err != nil || !found || value != 7 {
-		t.Fatalf("canceled cache hit = (%d, %t, %v)", value, found, err)
+	}); err != nil || status != LookupHit || value != 7 {
+		t.Fatalf("canceled cache hit = (%d, %v, %v)", value, status, err)
 	}
 
 	stats := cache.Stats()
@@ -578,11 +578,11 @@ func TestCacheGetOrLoadOwnerRechecksCache(t *testing.T) {
 	var calls atomic.Int64
 	done := make(chan cacheValueResult[int], 1)
 	go func() {
-		value, found, err := cache.GetOrLoad(context.Background(), "key", func(context.Context) (int, bool, error) {
+		value, status, err := cache.GetOrLoad(context.Background(), "key", func(context.Context) (int, bool, error) {
 			calls.Add(1)
 			return 99, true, nil
 		})
-		done <- cacheValueResult[int]{value: value, found: found, err: err}
+		done <- cacheValueResult[int]{value: value, status: status, err: err}
 	}()
 
 	waitForCacheCondition(t, time.Second, func() bool {
@@ -593,8 +593,8 @@ func TestCacheGetOrLoadOwnerRechecksCache(t *testing.T) {
 	state.mu.Unlock()
 
 	result := receiveCacheResult(t, done)
-	if result.err != nil || !result.found || result.value != 42 {
-		t.Fatalf("GetOrLoad() = (%d, %t, %v), want cached value", result.value, result.found, result.err)
+	if result.err != nil || result.status != LookupHit || result.value != 42 {
+		t.Fatalf("GetOrLoad() = (%d, %v, %v), want cached value", result.value, result.status, result.err)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("loader calls = %d, want 0", calls.Load())
@@ -651,16 +651,16 @@ func TestCacheGetOrLoadCoalescesMixedAPIs(t *testing.T) {
 			<-start
 
 			if index%2 == 0 {
-				value, found, err := cache.GetOrLoad(
+				value, status, err := cache.GetOrLoad(
 					contexts[index],
 					"key",
 					loader,
 				)
-				if err != nil || !found || value != 42 {
+				if err != nil || status != LookupHit || value != 42 {
 					errorsCh <- fmt.Errorf(
-						"GetOrLoad = (%d, %t, %v)",
+						"GetOrLoad = (%d, %v, %v)",
 						value,
-						found,
+						status,
 						err,
 					)
 				}
@@ -731,7 +731,7 @@ func TestCacheGetOrLoadWaiterCancellation(t *testing.T) {
 	ownerDone := make(chan cacheValueResult[int], 1)
 
 	go func() {
-		value, found, err := cache.GetOrLoad(
+		value, status, err := cache.GetOrLoad(
 			context.Background(),
 			"key",
 			func(context.Context) (int, bool, error) {
@@ -741,9 +741,9 @@ func TestCacheGetOrLoadWaiterCancellation(t *testing.T) {
 			},
 		)
 		ownerDone <- cacheValueResult[int]{
-			value: value,
-			found: found,
-			err:   err,
+			value:  value,
+			status: status,
+			err:    err,
 		}
 	}()
 
@@ -777,11 +777,11 @@ func TestCacheGetOrLoadWaiterCancellation(t *testing.T) {
 	close(releaseLoader)
 
 	owner := receiveCacheResult(t, ownerDone)
-	if owner.err != nil || !owner.found || owner.value != 42 {
+	if owner.err != nil || owner.status != LookupHit || owner.value != 42 {
 		t.Fatalf(
-			"owner result = (%d, %t, %v)",
+			"owner result = (%d, %v, %v)",
 			owner.value,
-			owner.found,
+			owner.status,
 			owner.err,
 		)
 	}
@@ -949,15 +949,15 @@ func TestCacheLoadSupersededCountCountsSharedWave(t *testing.T) {
 			ready.Done()
 			<-start
 
-			value, found, err := cache.GetOrLoad(
+			value, status, err := cache.GetOrLoad(
 				contexts[index],
 				"key",
 				loader,
 			)
 			results <- cacheValueResult[int]{
-				value: value,
-				found: found,
-				err:   err,
+				value:  value,
+				status: status,
+				err:    err,
 			}
 		}(index)
 	}
@@ -978,12 +978,12 @@ func TestCacheLoadSupersededCountCountsSharedWave(t *testing.T) {
 
 	for result := range results {
 		if result.value != 0 ||
-			result.found ||
+			result.status != LookupMiss ||
 			!errors.Is(result.err, ErrLoadSuperseded) {
 			t.Fatalf(
-				"GetOrLoad() = (%d, %t, %v), want superseded zero result",
+				"GetOrLoad() = (%d, %v, %v), want superseded zero result",
 				result.value,
-				result.found,
+				result.status,
 				result.err,
 			)
 		}
@@ -1027,7 +1027,7 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 	secondDone := make(chan cacheValueResult[int], 1)
 
 	go func() {
-		value, found, err := cache.GetOrLoad(
+		value, status, err := cache.GetOrLoad(
 			context.Background(),
 			"first",
 			func(context.Context) (int, bool, error) {
@@ -1037,14 +1037,14 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 			},
 		)
 		firstDone <- cacheValueResult[int]{
-			value: value,
-			found: found,
-			err:   err,
+			value:  value,
+			status: status,
+			err:    err,
 		}
 	}()
 
 	go func() {
-		value, found, err := cache.GetOrLoad(
+		value, status, err := cache.GetOrLoad(
 			context.Background(),
 			"second",
 			func(context.Context) (int, bool, error) {
@@ -1054,9 +1054,9 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 			},
 		)
 		secondDone <- cacheValueResult[int]{
-			value: value,
-			found: found,
-			err:   err,
+			value:  value,
+			status: status,
+			err:    err,
 		}
 	}()
 
@@ -1071,13 +1071,13 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 		"second": receiveCacheResult(t, secondDone),
 	} {
 		if result.value != 0 ||
-			result.found ||
+			result.status != LookupMiss ||
 			!errors.Is(result.err, ErrLoadSuperseded) {
 			t.Fatalf(
-				"%s GetOrLoad() = (%d, %t, %v), want superseded zero result",
+				"%s GetOrLoad() = (%d, %v, %v), want superseded zero result",
 				name,
 				result.value,
-				result.found,
+				result.status,
 				result.err,
 			)
 		}
@@ -1179,12 +1179,12 @@ func TestCacheMutationOfOtherKeyDoesNotSupersedeLoad(t *testing.T) {
 			done := make(chan cacheValueResult[int], 1)
 
 			go func() {
-				value, found, err := cache.GetOrLoad(context.Background(), "loading", func(context.Context) (int, bool, error) {
+				value, status, err := cache.GetOrLoad(context.Background(), "loading", func(context.Context) (int, bool, error) {
 					close(started)
 					<-release
 					return 42, true, nil
 				})
-				done <- cacheValueResult[int]{value: value, found: found, err: err}
+				done <- cacheValueResult[int]{value: value, status: status, err: err}
 			}()
 
 			receiveCacheSignal(t, started)
@@ -1192,8 +1192,8 @@ func TestCacheMutationOfOtherKeyDoesNotSupersedeLoad(t *testing.T) {
 			close(release)
 
 			result := receiveCacheResult(t, done)
-			if result.err != nil || !result.found || result.value != 42 {
-				t.Fatalf("GetOrLoad() = (%d, %t, %v)", result.value, result.found, result.err)
+			if result.err != nil || result.status != LookupHit || result.value != 42 {
+				t.Fatalf("GetOrLoad() = (%d, %v, %v)", result.value, result.status, result.err)
 			}
 			if value, status := cache.Get("loading"); value != 42 || status != LookupHit {
 				t.Fatalf("published value = (%d, %v)", value, status)
@@ -1363,7 +1363,7 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 	equal := compositeKey{Tenant: "acme", ID: 7}
 
 	var calls atomic.Int64
-	value, found, err := composite.GetOrLoad(
+	value, status, err := composite.GetOrLoad(
 		context.Background(),
 		stored,
 		func(context.Context) (int, bool, error) {
@@ -1371,11 +1371,11 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 			return 99, true, nil
 		},
 	)
-	if err != nil || !found || value != 99 {
+	if err != nil || status != LookupHit || value != 99 {
 		t.Fatalf(
-			"composite key GetOrLoad() = (%d, %t, %v)",
+			"composite key GetOrLoad() = (%d, %v, %v)",
 			value,
-			found,
+			status,
 			err,
 		)
 	}
@@ -1387,7 +1387,7 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 		t.Fatal("Exists(equal key) = false")
 	}
 
-	value, found, err = composite.GetOrLoad(
+	value, status, err = composite.GetOrLoad(
 		context.Background(),
 		equal,
 		func(context.Context) (int, bool, error) {
@@ -1395,11 +1395,11 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 			return 100, true, nil
 		},
 	)
-	if err != nil || !found || value != 99 {
+	if err != nil || status != LookupHit || value != 99 {
 		t.Fatalf(
-			"GetOrLoad(equal key) = (%d, %t, %v)",
+			"GetOrLoad(equal key) = (%d, %v, %v)",
 			value,
-			found,
+			status,
 			err,
 		)
 	}
@@ -1497,9 +1497,9 @@ func (ctx *observedContext) Done() <-chan struct{} {
 }
 
 type cacheValueResult[V any] struct {
-	value V
-	found bool
-	err   error
+	value  V
+	status LookupStatus
+	err    error
 }
 
 type cacheEntryResult[V any] struct {
