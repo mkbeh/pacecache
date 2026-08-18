@@ -47,24 +47,28 @@ func (index *expirationIndex[K, V]) update(item *entry[K, V], deadline int64) {
 		return
 	}
 
-	// Entries without time-based expiration are not part of the expiration
-	// index. Transitioning from NoExpiration to an expiring entry only needs an
-	// ordinary add.
-	if item.deadline == 0 {
-		item.deadline = deadline
-		index.add(item)
+	oldDeadline := item.deadline
+	if oldDeadline == deadline {
 		return
 	}
 
-	// Transitioning to NoExpiration removes the existing membership and does
-	// not create another one.
+	// Entries without time-based expiration are not part of the expiration
+	// index. Moving to NoExpiration only requires removing existing membership.
 	if deadline == 0 {
 		index.remove(item)
 		item.deadline = 0
 		return
 	}
 
-	oldBucketID := index.bucketID(item.deadline)
+	// Moving from NoExpiration to an expiring entry only requires adding the
+	// entry to the appropriate bucket.
+	if oldDeadline == 0 {
+		item.deadline = deadline
+		index.add(item)
+		return
+	}
+
+	oldBucketID := index.bucketID(oldDeadline)
 	newBucketID := index.bucketID(deadline)
 
 	if oldBucketID == newBucketID {
@@ -143,6 +147,9 @@ func (index *expirationIndex[K, V]) bucketID(deadline int64) int64 {
 		return 0
 	}
 
+	// Assign an entry to the first bucket boundary at or after its exact
+	// deadline. Physical cleanup may therefore lag logical expiration by at
+	// most one resolution interval.
 	id := deadline / index.resolutionNanos
 	if deadline%index.resolutionNanos != 0 {
 		id++
@@ -156,6 +163,8 @@ func (index *expirationIndex[K, V]) dueBucketID(now int64) int64 {
 		return -1
 	}
 
+	// A bucket becomes eligible for physical cleanup only after its boundary
+	// has been reached. Exact expiration is still enforced by lookup paths.
 	return now / index.resolutionNanos
 }
 
@@ -202,12 +211,8 @@ func (index *expirationIndex[K, V]) rekeySingletonBucket(
 
 	bucket := index.buckets[oldBucketID]
 	if bucket == nil ||
-		bucket.count != 1 ||
-		bucket.head != item ||
-		bucket.tail != item ||
-		item.expirationPrevious != nil ||
-		item.expirationNext != nil ||
-		bucket.heapIndex < 0 {
+		bucket.heapIndex < 0 ||
+		!bucket.containsOnly(item) {
 		return false
 	}
 
@@ -231,10 +236,9 @@ func (index *expirationIndex[K, V]) acquireBucket(id int64) *expirationBucket[K,
 	}
 
 	index.spareCount--
-	position := index.spareCount
-	bucket := index.spareBuckets[position]
-	index.spareBuckets[position] = nil
 
+	bucket := index.spareBuckets[index.spareCount]
+	index.spareBuckets[index.spareCount] = nil
 	bucket.id = id
 
 	return bucket
@@ -256,9 +260,16 @@ func (index *expirationIndex[K, V]) releaseBucket(bucket *expirationBucket[K, V]
 		return
 	}
 
-	position := index.spareCount
-	index.spareBuckets[position] = bucket
+	index.spareBuckets[index.spareCount] = bucket
 	index.spareCount++
+}
+
+func (bucket *expirationBucket[K, V]) containsOnly(item *entry[K, V]) bool {
+	return bucket.count == 1 &&
+		bucket.head == item &&
+		bucket.tail == item &&
+		item.expirationPrevious == nil &&
+		item.expirationNext == nil
 }
 
 func (bucket *expirationBucket[K, V]) pushBack(item *entry[K, V]) {

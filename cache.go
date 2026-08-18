@@ -21,12 +21,12 @@ const (
 	NoExpiration time.Duration = -1
 )
 
-// Cache is a bounded in-process read-through cache for keys of type K and values of type V.
+// Cache is a bounded in-process cache for keys of type K and values of type V.
 //
 // Cache uses segmented exact LRU eviction and TTL expiration. Positive entries
 // may optionally use sliding expiration, while negative results always use
-// absolute expiration. Concurrent loads for the same key are coalesced through
-// singleflight.
+// absolute expiration. GetOrLoad and GetOrLoadEntry provide cache-aside loading
+// and coalesce concurrent loads for the same key.
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[K comparable, V any] struct {
@@ -54,8 +54,7 @@ type Cache[K comparable, V any] struct {
 // per active key so mutating one key never invalidates loads for another key in
 // the same storage segment.
 type cacheState[K comparable, V any] struct {
-	mu sync.RWMutex
-
+	mu    sync.RWMutex
 	group *singleflight.Group[K, loadResult[V]]
 }
 
@@ -171,13 +170,9 @@ func (cache *Cache[K, V]) Exists(key K) bool {
 	}
 
 	index := cache.store.segmentIndex(key)
+	stats := cache.stats.segment(index)
 
-	return cache.store.existsAt(
-		index,
-		key,
-		cache.store.now(),
-		cache.stats.segment(index),
-	)
+	return cache.store.existsAt(index, key, cache.store.now(), stats)
 }
 
 // RefreshTTL renews the expiration deadline of a live positive entry.
@@ -198,13 +193,9 @@ func (cache *Cache[K, V]) RefreshTTL(key K) bool {
 	}
 
 	index := cache.store.segmentIndex(key)
+	stats := cache.stats.segment(index)
 
-	return cache.store.refreshTTLAt(
-		index,
-		key,
-		cache.store.now(),
-		cache.stats.segment(index),
-	)
+	return cache.store.refreshTTLAt(index, key, cache.store.now(), stats)
 }
 
 // Get returns the cached value for key.
@@ -378,11 +369,9 @@ func (cache *Cache[K, V]) getOrLoad(
 	if !cache.initialized() {
 		return loadResult[V]{}, errors.New("pacecache: cache is not initialized")
 	}
-
 	if ctx == nil {
 		return loadResult[V]{}, errors.New("pacecache: context is nil")
 	}
-
 	if loader == nil {
 		return loadResult[V]{}, errors.New("pacecache: loader is nil")
 	}
@@ -394,19 +383,21 @@ func (cache *Cache[K, V]) getOrLoad(
 		return loadResultFromCached(cached), nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		return loadResult[V]{}, err
+	}
+
 	state := &cache.states[index]
 
 	// Keep singleflight registration ordered with mutations. DoChan only
 	// registers or starts the shared call; loader I/O runs outside state.mu.
 	state.mu.RLock()
 
-	resultChannel := state.group.DoChan(
+	resultCh := state.group.DoChan(
 		key,
 		func(callState singleflight.CallState) (loadResult[V], error) {
-			// Another caller may have populated the cache between the initial
-			// lookup and this call becoming the singleflight owner. This lookup
-			// observes the same value and deadline regardless of which public API
-			// started the wave.
+			// The cache may have been populated between the initial lookup and
+			// this call becoming the singleflight owner.
 			if cached, ok := cache.store.getEntryAt(index, key, cache.store.now(), stats); ok {
 				return loadResultFromCached(cached), nil
 			}
@@ -424,30 +415,30 @@ func (cache *Cache[K, V]) getOrLoad(
 			}
 
 			if !found {
-				var zeroValue V
-
-				value = zeroValue
+				var zero V
+				value = zero
 			}
-
-			now := finishedAt
 
 			var (
 				deadline   int64
 				refreshTTL time.Duration
 			)
 
-			if found {
-				refreshTTL = cache.effectiveExpirationTTL(DefaultExpiration)
-				deadline = deadlineAfter(now, refreshTTL)
-			} else if cache.negativeTTL > 0 {
-				deadline = deadlineAfter(now, cache.negativeTTL)
+			switch {
+			case found:
+				refreshTTL = cache.effectiveExpirationTTL(
+					DefaultExpiration,
+				)
+				deadline = deadlineAfter(finishedAt, refreshTTL)
+
+			case cache.negativeTTL > 0:
+				deadline = deadlineAfter(finishedAt, cache.negativeTTL)
 			}
 
 			loaded := newLoadResult(value, found, deadline)
 
-			// Publication is atomic with respect to Set and invalidation. If a
-			// mutation forgot this call before publication, every waiter observes
-			// ErrLoadSuperseded rather than a stale loader result.
+			// Publication is ordered with Set and invalidation. A mutation that
+			// wins first makes this load result stale for every waiter.
 			state.mu.RLock()
 
 			if callState.Forgotten() {
@@ -472,11 +463,10 @@ func (cache *Cache[K, V]) getOrLoad(
 	case <-ctx.Done():
 		return loadResult[V]{}, ctx.Err()
 
-	case result := <-resultChannel:
+	case result := <-resultCh:
 		if result.Shared {
 			cache.stats.recordShared(index)
 		}
-
 		if result.Err != nil {
 			return loadResult[V]{}, result.Err
 		}
@@ -742,35 +732,6 @@ func (cache *Cache[K, V]) effectiveExpirationTTL(expiration time.Duration) time.
 	return jitteredTTL(ttl, cache.jitter)
 }
 
-func deadlineAfter(now int64, ttl time.Duration) int64 {
-	delta := int64(ttl)
-	if delta <= 0 {
-		return 0
-	}
-
-	maxDeadline := int64(maxDuration)
-	if now >= maxDeadline-delta {
-		return maxDeadline
-	}
-
-	return now + delta
-}
-
-func jitteredTTL(ttl, jitter time.Duration) time.Duration {
-	if jitter == 0 {
-		return ttl
-	}
-
-	jitterLimit := min(jitter, maxDuration-ttl)
-	if jitterLimit <= 0 {
-		return ttl
-	}
-
-	return ttl + time.Duration(
-		rand.Int64N(int64(jitterLimit)),
-	)
-}
-
 func (cache *Cache[K, V]) registerMetrics(metrics Metrics) error {
 	if metrics == nil {
 		return nil
@@ -804,4 +765,33 @@ func newCacheStates[K comparable, V any](count int) []cacheState[K, V] {
 	}
 
 	return states
+}
+
+func deadlineAfter(now int64, ttl time.Duration) int64 {
+	delta := int64(ttl)
+	if delta <= 0 {
+		return 0
+	}
+
+	maxDeadline := int64(maxDuration)
+	if now >= maxDeadline-delta {
+		return maxDeadline
+	}
+
+	return now + delta
+}
+
+func jitteredTTL(ttl, jitter time.Duration) time.Duration {
+	if jitter == 0 {
+		return ttl
+	}
+
+	jitterLimit := min(jitter, maxDuration-ttl)
+	if jitterLimit <= 0 {
+		return ttl
+	}
+
+	return ttl + time.Duration(
+		rand.Int64N(int64(jitterLimit)),
+	)
 }

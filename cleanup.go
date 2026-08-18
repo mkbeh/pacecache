@@ -6,8 +6,8 @@ const (
 	defaultCleanupBatchSize   = 256
 	defaultCleanupEntryBudget = 16 * 1024
 
-	cleanupTimeBudget        = time.Millisecond
-	cleanupContinuationDelay = time.Millisecond
+	cleanupTimeBudget = time.Millisecond
+	cleanupNextDelay  = time.Millisecond
 )
 
 type cleanupPolicy struct {
@@ -65,7 +65,7 @@ func (worker *cleanupWorker[K, V]) run() {
 			next := worker.interval
 
 			if worker.cleanupQuantum(worker.store.now()) {
-				next = worker.continuationDelay()
+				next = worker.nextDelay()
 			}
 
 			timer.Reset(next)
@@ -88,89 +88,81 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 	}
 
 	startedAt := time.Now()
-	remainingEntries := worker.policy.entryBudget
+	remaining := worker.policy.entryBudget
 
-	pendingSegments := worker.pendingSegments[:0]
-	startSegment := worker.nextSegment
+	pending := worker.pendingSegments[:0]
+	start := worker.nextSegment
 
 	for offset := range segmentCount {
 		if worker.stopped() {
-			worker.pendingSegments = pendingSegments[:0]
+			worker.pendingSegments = pending[:0]
 			return false
 		}
 
-		if remainingEntries == 0 || cleanupTimeBudgetExceeded(startedAt) {
-			worker.nextSegment = (startSegment + offset) % segmentCount
-			worker.pendingSegments = pendingSegments[:0]
+		if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
+			worker.nextSegment = (start + offset) % segmentCount
+			worker.pendingSegments = pending[:0]
+
 			return true
 		}
 
-		segmentIndex := (startSegment + offset) % segmentCount
-		batchLimit := min(worker.policy.batchSize, remainingEntries)
+		index := (start + offset) % segmentCount
+		limit := min(worker.policy.batchSize, remaining)
+		stats := worker.stats.segment(index)
 
-		removed, hasMore := worker.store.cleanupExpiredAt(
-			segmentIndex,
-			now,
-			batchLimit,
-			worker.stats.segment(segmentIndex),
-		)
+		removed, hasMore := worker.store.cleanupExpiredAt(index, now, limit, stats)
 
-		remainingEntries -= removed
+		remaining -= removed
 
 		if hasMore {
-			pendingSegments = append(pendingSegments, segmentIndex)
+			pending = append(pending, index)
 		}
 	}
 
-	// Rotate the first segment between complete passes so that no segment gets
-	// a permanent first-mover advantage when cleanup repeatedly finds work in
-	// many segments.
-	worker.nextSegment = (startSegment + 1) % segmentCount
+	// Rotate the first segment between complete passes so no segment gets a
+	// permanent first-mover advantage when many segments repeatedly have work.
+	worker.nextSegment = (start + 1) % segmentCount
 
-	for len(pendingSegments) != 0 {
-		nextCount := 0
+	for len(pending) != 0 {
+		next := pending[:0]
 
-		for _, segmentIndex := range pendingSegments {
+		for _, index := range pending {
 			if worker.stopped() {
-				worker.pendingSegments = pendingSegments[:0]
+				worker.pendingSegments = pending[:0]
 				return false
 			}
 
-			if remainingEntries == 0 || cleanupTimeBudgetExceeded(startedAt) {
-				// Preserve fair continuation by starting the next quantum at the
-				// first pending segment we did not get to process in this round.
-				worker.nextSegment = segmentIndex
-				worker.pendingSegments = pendingSegments[:0]
+			if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
+				// Resume from the first pending segment that this quantum did
+				// not get a chance to process.
+				worker.nextSegment = index
+				worker.pendingSegments = pending[:0]
+
 				return true
 			}
 
-			batchLimit := min(worker.policy.batchSize, remainingEntries)
+			limit := min(worker.policy.batchSize, remaining)
+			stats := worker.stats.segment(index)
 
-			removed, hasMore := worker.store.cleanupExpiredAt(
-				segmentIndex,
-				now,
-				batchLimit,
-				worker.stats.segment(segmentIndex),
-			)
+			removed, hasMore := worker.store.cleanupExpiredAt(index, now, limit, stats)
 
-			remainingEntries -= removed
+			remaining -= removed
 
 			if hasMore {
-				pendingSegments[nextCount] = segmentIndex
-				nextCount++
+				next = append(next, index)
 			}
 		}
 
-		pendingSegments = pendingSegments[:nextCount]
+		pending = next
 	}
 
-	worker.pendingSegments = pendingSegments[:0]
+	worker.pendingSegments = pending[:0]
 
 	return false
 }
 
-func (worker *cleanupWorker[K, V]) continuationDelay() time.Duration {
-	return min(worker.interval, cleanupContinuationDelay)
+func (worker *cleanupWorker[K, V]) nextDelay() time.Duration {
+	return min(worker.interval, cleanupNextDelay)
 }
 
 func (worker *cleanupWorker[K, V]) stopped() bool {

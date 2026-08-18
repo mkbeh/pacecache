@@ -295,37 +295,37 @@ func (storage *storage[K, V]) cleanupExpired(
 ) int64 {
 	var removed int64
 
-	remainingEntries := policy.entryBudget
-
 	for {
-		hasMore := false
+		remaining := policy.entryBudget
+		pending := false
 
 		for index := range storage.segments {
-			if remainingEntries == 0 {
+			// Yield after processing the configured entry budget so a large
+			// cleanup cannot monopolize the current processor.
+			if remaining == 0 {
 				runtime.Gosched()
-				remainingEntries = policy.entryBudget
+				remaining = policy.entryBudget
 			}
 
-			batchLimit := min(policy.batchSize, remainingEntries)
+			limit := min(policy.batchSize, remaining)
 
-			count, pending := storage.cleanupExpiredAt(
-				index,
-				now,
-				batchLimit,
-				stats.segment(index),
-			)
+			count, segmentPending := storage.cleanupExpiredAt(index, now, limit, stats.segment(index))
 
 			removed += int64(count)
-			remainingEntries -= count
-			hasMore = hasMore || pending
+			remaining -= count
+
+			// A pending segment still contains entries expired at the cleanup
+			// snapshot represented by now and requires another round.
+			pending = pending || segmentPending
 		}
 
-		if !hasMore {
+		if !pending {
 			return removed
 		}
 
+		// Give other goroutines a chance to run before starting another full
+		// pass over the segments.
 		runtime.Gosched()
-		remainingEntries = policy.entryBudget
 	}
 }
 
@@ -382,18 +382,14 @@ func (segment *storageSegment[K, V]) refreshTTL(
 		return false
 	}
 
-	// A live positive entry without time-based expiration exists, but there is
-	// no deadline to refresh.
-	if item.refreshTTL == 0 {
-		return true
-	}
+	if item.refreshTTL > 0 {
+		newDeadline := deadlineAfter(now, item.refreshTTL)
 
-	deadline := deadlineAfter(now, item.refreshTTL)
-
-	// now may have been captured before waiting for the segment lock. Never let
-	// an older refresh shorten a deadline established by a newer operation.
-	if deadline > item.deadline {
-		segment.expirations.update(item, deadline)
+		// now may have been captured before waiting for the segment lock.
+		// Never let an older refresh shorten a newer deadline.
+		if newDeadline > item.deadline {
+			segment.expirations.update(item, newDeadline)
+		}
 	}
 
 	return true
@@ -567,7 +563,7 @@ func (segment *storageSegment[K, V]) getLocked(
 
 func (segment *storageSegment[K, V]) set(
 	key K,
-	value cachedValue[V],
+	cached cachedValue[V],
 	deadline int64,
 	stats *segmentStats,
 ) {
@@ -577,20 +573,20 @@ func (segment *storageSegment[K, V]) set(
 		return
 	}
 
+	// Sliding expiration applies only to positive expiring entries.
+	if !cached.found || deadline == 0 {
+		cached.refreshTTL = 0
+	}
+
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
-	refreshTTL := value.refreshTTL
-	if !value.found || deadline == 0 {
-		refreshTTL = 0
-	}
-
 	if item, ok := segment.entries[key]; ok {
-		item.value = value.value
-		item.found = value.found
-		item.refreshTTL = refreshTTL
-		segment.expirations.update(item, deadline)
+		item.value = cached.value
+		item.found = cached.found
+		item.refreshTTL = cached.refreshTTL
 
+		segment.expirations.update(item, deadline)
 		segment.moveToFrontLocked(item)
 
 		return
@@ -609,9 +605,13 @@ func (segment *storageSegment[K, V]) set(
 		delete(segment.entries, item.key)
 
 		item.key = key
-		item.value = value.value
-		item.found = value.found
-		item.refreshTTL = refreshTTL
+		item.value = cached.value
+		item.found = cached.found
+		item.refreshTTL = cached.refreshTTL
+
+		// remove detaches the victim from the expiration index but deliberately
+		// leaves its deadline unchanged. Reset it so update treats the reused
+		// entry as having no previous expiration membership.
 		item.deadline = 0
 
 		segment.expirations.update(item, deadline)
@@ -623,9 +623,9 @@ func (segment *storageSegment[K, V]) set(
 
 	item := &entry[K, V]{
 		key:        key,
-		value:      value.value,
-		found:      value.found,
-		refreshTTL: refreshTTL,
+		value:      cached.value,
+		found:      cached.found,
+		refreshTTL: cached.refreshTTL,
 	}
 
 	segment.expirations.update(item, deadline)
@@ -683,17 +683,22 @@ func (segment *storageSegment[K, V]) cleanupExpired(
 	dueID := segment.expirations.dueBucketID(now)
 	removed := 0
 
-	for removed < limit &&
-		segment.expirations.hasDueBucket(dueID) {
+	for removed < limit {
+		if !segment.expirations.hasDueBucket(dueID) {
+			return removed, false
+		}
+
 		item := segment.expirations.popRootEntry()
 
-		current, ok := segment.entries[item.key]
-		if !ok || current != item {
+		// The expiration index and storage map must always reference the same
+		// entry. A mismatch indicates an internal consistency bug.
+		if segment.entries[item.key] != item {
 			panic("pacecache: expiration index is inconsistent with storage")
 		}
 
 		delete(segment.entries, item.key)
 		segment.unlinkLocked(item)
+
 		removed++
 
 		if stats != nil {
