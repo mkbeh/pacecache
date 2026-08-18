@@ -361,15 +361,41 @@ func TestDoPropagatesPanic(t *testing.T) {
 
 func TestPanicErrorUnwrapsOnlyErrors(t *testing.T) {
 	sentinel := errors.New("boom")
-	withError := newPanicError(sentinel).(*panicError)
-	if !errors.Is(withError, sentinel) {
-		t.Fatalf("errors.Is(%v, sentinel) = false", withError)
+
+	withErrorValue := newPanicError(sentinel)
+
+	var withError *panicError
+	if !errors.As(withErrorValue, &withError) {
+		t.Fatalf(
+			"errors.As(%T, *panicError) = false",
+			withErrorValue,
+		)
 	}
 
-	withoutError := newPanicError("boom").(*panicError)
-	if withoutError.Unwrap() != nil {
-		t.Fatalf("Unwrap() = %v, want nil", withoutError.Unwrap())
+	if !errors.Is(withError, sentinel) {
+		t.Fatalf(
+			"errors.Is(%v, sentinel) = false",
+			withError,
+		)
 	}
+
+	withoutErrorValue := newPanicError("boom")
+
+	var withoutError *panicError
+	if !errors.As(withoutErrorValue, &withoutError) {
+		t.Fatalf(
+			"errors.As(%T, *panicError) = false",
+			withoutErrorValue,
+		)
+	}
+
+	if withoutError.Unwrap() != nil {
+		t.Fatalf(
+			"Unwrap() = %v, want nil",
+			withoutError.Unwrap(),
+		)
+	}
+
 	if withoutError.Error() == "" {
 		t.Fatal("Error() is empty")
 	}
