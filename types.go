@@ -53,73 +53,49 @@ func (entry Entry[V]) ExpiresAt() time.Time {
 // Loader errors are never cached.
 type Loader[V any] func(ctx context.Context) (value V, found bool, err error)
 
-const uncachedNegativeLoadState int64 = -1 << 63
-
 // loadResult carries the value returned by a shared load together with the
-// cache state observed or published by that same operation. The state is
-// encoded in one int64 to keep the singleflight payload compact.
+// cache state observed or published by that same operation.
 //
-//	state >= 0: positive entry; state is its deadline (zero means no expiry)
-//	MinInt64:    successful negative result that was not cached
-//	otherwise:   cached negative entry; -state is its deadline
-//
-// Negative cache entries always have a positive deadline, so every state has
-// an unambiguous meaning.
+// LookupHit carries a positive value and its deadline. LookupNegativeHit
+// carries the deadline of a cached negative result. LookupMiss represents a
+// successful negative result that was not cached.
 type loadResult[V any] struct {
-	value V
-	state int64
+	value    V
+	deadline int64
+	status   LookupStatus
 }
 
 func newLoadResult[V any](value V, found bool, deadline int64) loadResult[V] {
 	if found {
 		return loadResult[V]{
-			value: value,
-			state: deadline,
+			value:    value,
+			deadline: deadline,
+			status:   LookupHit,
 		}
 	}
 
-	if deadline <= 0 {
+	if deadline > 0 {
 		return loadResult[V]{
-			state: uncachedNegativeLoadState,
+			deadline: deadline,
+			status:   LookupNegativeHit,
 		}
 	}
 
 	return loadResult[V]{
-		state: -deadline,
+		status: LookupMiss,
 	}
 }
 
 func loadResultFromCached[V any](cached cachedEntry[V]) loadResult[V] {
-	return newLoadResult(
-		cached.value,
-		cached.found,
-		cached.deadline,
-	)
-}
-
-func (result loadResult[V]) found() bool {
-	return result.state >= 0
-}
-
-func (result loadResult[V]) status() LookupStatus {
-	switch {
-	case result.state >= 0:
-		return LookupHit
-	case result.state == uncachedNegativeLoadState:
-		return LookupMiss
-	default:
-		return LookupNegativeHit
+	status := LookupNegativeHit
+	if cached.found {
+		status = LookupHit
 	}
-}
 
-func (result loadResult[V]) deadline() int64 {
-	switch {
-	case result.state >= 0:
-		return result.state
-	case result.state == uncachedNegativeLoadState:
-		return 0
-	default:
-		return -result.state
+	return loadResult[V]{
+		value:    cached.value,
+		deadline: cached.deadline,
+		status:   status,
 	}
 }
 
@@ -133,7 +109,7 @@ type cachedValue[V any] struct {
 	refreshTTL time.Duration
 }
 
-// cachedEntry is an immutable storage snapshot used by GetEntry.
+// cachedEntry is an immutable storage snapshot used by entry-aware lookups.
 type cachedEntry[V any] struct {
 	value    V
 	found    bool

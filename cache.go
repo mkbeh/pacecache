@@ -314,7 +314,7 @@ func (cache *Cache[K, V]) GetOrLoad(
 		return zero, false, err
 	}
 
-	return result.value, result.found(), nil
+	return result.value, result.status == LookupHit, nil
 }
 
 // GetOrLoadEntry returns an immutable cache entry snapshot for key or obtains
@@ -346,12 +346,12 @@ func (cache *Cache[K, V]) GetOrLoadEntry(
 		return zero, LookupMiss, err
 	}
 
-	status := result.status()
+	status := result.status
 	if status == LookupMiss {
 		return zero, LookupMiss, nil
 	}
 
-	expiresAt := cache.store.expiresAt(result.deadline())
+	expiresAt := cache.store.expiresAt(result.deadline)
 
 	if status == LookupNegativeHit {
 		return Entry[V]{
@@ -682,12 +682,11 @@ func (cache *Cache[K, V]) storeLoaded(
 	loaded loadResult[V],
 	refreshTTL time.Duration,
 ) {
-	found := loaded.found()
-	deadline := loaded.deadline()
-
-	if !found && deadline == 0 {
+	if loaded.status == LookupMiss {
 		return
 	}
+
+	found := loaded.status == LookupHit
 
 	cached := cachedValue[V]{
 		found: found,
@@ -702,7 +701,7 @@ func (cache *Cache[K, V]) storeLoaded(
 		index,
 		key,
 		cached,
-		deadline,
+		loaded.deadline,
 		cache.stats.segment(index),
 	)
 }
