@@ -645,11 +645,15 @@ func (cache *Cache[K, V]) CleanupExpired() int64 {
 		return 0
 	}
 
-	return cache.store.cleanupExpired(
+	removed := cache.store.cleanupExpired(
 		cache.store.now(),
 		cache.cleanupPolicy,
 		cache.stats,
 	)
+
+	cache.stats.recordCleanup()
+
+	return removed
 }
 
 func (cache *Cache[K, V]) invalidateOne(index int, key K) bool {

@@ -181,6 +181,13 @@ func TestCleanupWorkerRunRemovesExpiredEntries(t *testing.T) {
 		time.Millisecond,
 	)
 	worker.start()
+	t.Cleanup(func() {
+		select {
+		case <-worker.done:
+		default:
+			worker.close()
+		}
+	})
 
 	waitForCleanupCondition(t, time.Second, func() bool {
 		segment := &store.segments[0]
@@ -202,6 +209,19 @@ func TestCleanupWorkerRunRemovesExpiredEntries(t *testing.T) {
 	}
 	if got := stats.segment(0).expirationCount; got != 1 {
 		t.Fatalf("expirationCount = %d, want 1", got)
+	}
+	if got := stats.cleanupWorkerRunCount.Load(); got < 1 {
+		t.Fatalf("cleanupWorkerRunCount = %d, want at least 1", got)
+	}
+	if got := stats.cleanupWorkerPendingCount.Load(); got > stats.cleanupWorkerRunCount.Load() {
+		t.Fatalf(
+			"cleanupWorkerPendingCount = %d, run count = %d",
+			got,
+			stats.cleanupWorkerRunCount.Load(),
+		)
+	}
+	if got := stats.cleanupWorkerDurationNanos.Load(); got <= 0 {
+		t.Fatalf("cleanupWorkerDurationNanos = %d, want positive", got)
 	}
 }
 

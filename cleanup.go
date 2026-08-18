@@ -62,9 +62,15 @@ func (worker *cleanupWorker[K, V]) run() {
 	for {
 		select {
 		case <-timer.C:
-			next := worker.interval
+			startedAt := worker.store.now()
+			pending := worker.cleanupQuantum(startedAt)
+			worker.stats.recordCleanupWorker(
+				pending,
+				time.Duration(worker.store.now()-startedAt),
+			)
 
-			if worker.cleanupQuantum(worker.store.now()) {
+			next := worker.interval
+			if pending {
 				next = worker.nextDelay()
 			}
 

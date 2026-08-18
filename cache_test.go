@@ -1318,8 +1318,19 @@ func TestCacheInvalidateAllAndCleanupExpired(t *testing.T) {
 		if got := cache.Stats().EntryCount; got != 1 {
 			t.Fatalf("EntryCount = %d, want 1", got)
 		}
-		if got := cache.Stats().ExpirationCount; got != 2 {
-			t.Fatalf("ExpirationCount = %d, want 2", got)
+		stats := cache.Stats()
+		if stats.ExpirationCount != 2 {
+			t.Fatalf("ExpirationCount = %d, want 2", stats.ExpirationCount)
+		}
+		if stats.CleanupCount != 1 {
+			t.Fatalf("CleanupCount = %d, want 1", stats.CleanupCount)
+		}
+
+		if got := cache.CleanupExpired(); got != 0 {
+			t.Fatalf("second CleanupExpired() = %d, want 0", got)
+		}
+		if got := cache.Stats().CleanupCount; got != 2 {
+			t.Fatalf("CleanupCount after second call = %d, want 2", got)
 		}
 	})
 }

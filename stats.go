@@ -81,6 +81,24 @@ type Stats struct {
 	// but which had not yet been removed.
 	InvalidatedAllCount int64
 
+	// Cleanup lifecycle.
+
+	// CleanupCount is the cumulative number of completed explicit
+	// CleanupExpired calls.
+	CleanupCount int64
+
+	// CleanupWorkerRunCount is the cumulative number of cleanup quanta
+	// completed by the background cleanup worker.
+	CleanupWorkerRunCount int64
+
+	// CleanupWorkerPendingCount is the cumulative number of background cleanup
+	// quanta that completed with more expired entries still pending.
+	CleanupWorkerPendingCount int64
+
+	// CleanupWorkerDuration is the cumulative time spent executing background
+	// cleanup quanta. Waiting between cleanup runs is not included.
+	CleanupWorkerDuration time.Duration
+
 	// Storage lifecycle.
 
 	// EvictionCount is the cumulative number of entries evicted because a
@@ -96,8 +114,14 @@ type Stats struct {
 //
 // Each segment corresponds to one storage and coordination segment.
 type statsCollector struct {
-	segments            []segmentStats
+	segments []segmentStats
+
 	invalidatedAllCount atomic.Int64
+
+	cleanupCount               atomic.Int64
+	cleanupWorkerRunCount      atomic.Int64
+	cleanupWorkerPendingCount  atomic.Int64
+	cleanupWorkerDurationNanos atomic.Int64
 }
 
 type segmentStats struct {
@@ -128,9 +152,13 @@ func (cache *Cache[K, V]) Stats() Stats {
 	}
 
 	snapshot := Stats{
-		MaxEntries:          int64(cache.store.maxEntries),
-		SegmentCount:        int64(len(cache.store.segments)),
-		InvalidatedAllCount: cache.stats.invalidatedAllCount.Load(),
+		MaxEntries:                int64(cache.store.maxEntries),
+		SegmentCount:              int64(len(cache.store.segments)),
+		InvalidatedAllCount:       cache.stats.invalidatedAllCount.Load(),
+		CleanupCount:              cache.stats.cleanupCount.Load(),
+		CleanupWorkerRunCount:     cache.stats.cleanupWorkerRunCount.Load(),
+		CleanupWorkerPendingCount: cache.stats.cleanupWorkerPendingCount.Load(),
+		CleanupWorkerDuration:     time.Duration(cache.stats.cleanupWorkerDurationNanos.Load()),
 	}
 
 	for index := range cache.store.segments {
@@ -211,4 +239,17 @@ func (stats *statsCollector) recordAllInvalidation(count int64) {
 	}
 
 	stats.invalidatedAllCount.Add(count)
+}
+
+func (stats *statsCollector) recordCleanup() {
+	stats.cleanupCount.Add(1)
+}
+
+func (stats *statsCollector) recordCleanupWorker(pending bool, duration time.Duration) {
+	stats.cleanupWorkerRunCount.Add(1)
+	stats.cleanupWorkerDurationNanos.Add(duration.Nanoseconds())
+
+	if pending {
+		stats.cleanupWorkerPendingCount.Add(1)
+	}
 }

@@ -58,25 +58,33 @@ func TestStatsAggregatesSegments(t *testing.T) {
 	stats.segments[1].sharedCount.Store(120)
 	stats.segments[1].invalidatedKeyCount.Store(130)
 	stats.invalidatedAllCount.Store(140)
+	stats.cleanupCount.Store(150)
+	stats.cleanupWorkerRunCount.Store(160)
+	stats.cleanupWorkerPendingCount.Store(170)
+	stats.cleanupWorkerDurationNanos.Store(int64(180 * time.Millisecond))
 
 	got := cache.Stats()
 	want := Stats{
-		EntryCount:          3,
-		MaxEntries:          8,
-		SegmentCount:        2,
-		HitCount:            22,
-		NegativeHitCount:    33,
-		MissCount:           44,
-		LoadFoundCount:      77,
-		LoadNotFoundCount:   88,
-		LoadErrorCount:      99,
-		LoadSupersededCount: 110,
-		LoadDuration:        121 * time.Millisecond,
-		SharedCount:         132,
-		InvalidatedKeyCount: 143,
-		InvalidatedAllCount: 140,
-		EvictionCount:       55,
-		ExpirationCount:     66,
+		EntryCount:                3,
+		MaxEntries:                8,
+		SegmentCount:              2,
+		HitCount:                  22,
+		NegativeHitCount:          33,
+		MissCount:                 44,
+		LoadFoundCount:            77,
+		LoadNotFoundCount:         88,
+		LoadErrorCount:            99,
+		LoadSupersededCount:       110,
+		LoadDuration:              121 * time.Millisecond,
+		SharedCount:               132,
+		InvalidatedKeyCount:       143,
+		InvalidatedAllCount:       140,
+		CleanupCount:              150,
+		CleanupWorkerRunCount:     160,
+		CleanupWorkerPendingCount: 170,
+		CleanupWorkerDuration:     180 * time.Millisecond,
+		EvictionCount:             55,
+		ExpirationCount:           66,
 	}
 
 	if got != want {
@@ -182,5 +190,27 @@ func TestStatsConcurrentWithCacheOperations(t *testing.T) {
 	stats := cache.Stats()
 	if stats.MaxEntries != 128 || stats.SegmentCount != 8 {
 		t.Fatalf("Stats() configuration = (%d, %d), want (128, 8)", stats.MaxEntries, stats.SegmentCount)
+	}
+}
+
+func TestStatsRecordCleanup(t *testing.T) {
+	stats := newStatsCollector(1)
+
+	stats.recordCleanup()
+	stats.recordCleanup()
+	stats.recordCleanupWorker(true, 3*time.Millisecond)
+	stats.recordCleanupWorker(false, 5*time.Millisecond)
+
+	if got := stats.cleanupCount.Load(); got != 2 {
+		t.Fatalf("cleanupCount = %d, want 2", got)
+	}
+	if got := stats.cleanupWorkerRunCount.Load(); got != 2 {
+		t.Fatalf("cleanupWorkerRunCount = %d, want 2", got)
+	}
+	if got := stats.cleanupWorkerPendingCount.Load(); got != 1 {
+		t.Fatalf("cleanupWorkerPendingCount = %d, want 1", got)
+	}
+	if got := time.Duration(stats.cleanupWorkerDurationNanos.Load()); got != 8*time.Millisecond {
+		t.Fatalf("cleanupWorkerDuration = %v, want %v", got, 8*time.Millisecond)
 	}
 }
