@@ -17,6 +17,10 @@ type user struct {
 	Name string
 }
 
+type userRepository struct {
+	users map[int64]user
+}
+
 func main() {
 	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
@@ -24,7 +28,7 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	// 1. Configure an OpenTelemetry metrics exporter.
+	// 1. Configure an OpenTelemetry SDK exporter and MeterProvider.
 	exporter, err := stdoutmetric.New(
 		stdoutmetric.WithPrettyPrint(),
 	)
@@ -43,13 +47,23 @@ func run(ctx context.Context) error {
 		}
 	}()
 
-	// 2. Create the pacecache OpenTelemetry integration.
+	// 2. Create one reusable pacecache OpenTelemetry integration.
 	metrics := paceotel.New(
 		paceotel.WithMeterProvider(meterProvider),
 	)
 
+	repository := &userRepository{
+		users: map[int64]user{
+			42: {
+				ID:   42,
+				Name: "Ada",
+			},
+		},
+	}
+
 	users, err := pacecache.New[int64, user](
 		"users",
+		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(time.Minute),
 		pacecache.WithNegativeTTL(10*time.Second),
 		pacecache.WithMetrics(metrics),
@@ -59,47 +73,74 @@ func run(ctx context.Context) error {
 	}
 	defer users.Close()
 
-	loadUser := func(ctx context.Context) (user, bool, error) {
-		return user{
-			ID:   42,
-			Name: "Ada",
-		}, true, nil
+	loadUser := func(id int64) (user, pacecache.LookupStatus, error) {
+		return users.GetOrLoad(
+			ctx,
+			id,
+			func(ctx context.Context) (user, bool, error) {
+				return repository.find(ctx, id)
+			},
+		)
 	}
 
-	// 3. Generate cache activity.
-	_, _, err = users.GetOrLoad(
-		ctx,
-		42,
-		loadUser,
-	)
-	if err != nil {
-		return fmt.Errorf("load user: %w", err)
+	// 3. Generate representative cache activity.
+	lookups := []struct {
+		id     int64
+		status pacecache.LookupStatus
+	}{
+		{id: 42, status: pacecache.LookupHit},
+		{id: 42, status: pacecache.LookupHit},
+		{id: 404, status: pacecache.LookupNegativeHit},
+		{id: 404, status: pacecache.LookupNegativeHit},
 	}
 
-	_, _, err = users.GetOrLoad(
-		ctx,
-		42,
-		loadUser,
-	)
-	if err != nil {
-		return fmt.Errorf("load cached user: %w", err)
+	for _, lookup := range lookups {
+		_, status, err := loadUser(lookup.id)
+		if err != nil {
+			return fmt.Errorf("load user %d: %w", lookup.id, err)
+		}
+		if status != lookup.status {
+			return fmt.Errorf(
+				"load user %d: status=%d, want=%d",
+				lookup.id,
+				status,
+				lookup.status,
+			)
+		}
 	}
 
 	users.Invalidate(42)
 
-	_, _, err = users.GetOrLoad(
-		ctx,
-		42,
-		loadUser,
-	)
+	_, status, err := loadUser(42)
 	if err != nil {
-		return fmt.Errorf("reload user: %w", err)
+		return fmt.Errorf("reload invalidated user: %w", err)
+	}
+	if status != pacecache.LookupHit {
+		return fmt.Errorf(
+			"reload invalidated user: status=%d, want=%d",
+			status,
+			pacecache.LookupHit,
+		)
 	}
 
-	// 4. Collect and export the current cache metrics.
+	// 4. Force one collection because this short-lived example exits
+	// immediately. Long-running applications normally export periodically.
 	if err := meterProvider.ForceFlush(ctx); err != nil {
 		return fmt.Errorf("flush metrics: %w", err)
 	}
 
 	return nil
+}
+
+func (repository *userRepository) find(
+	ctx context.Context,
+	id int64,
+) (user, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return user{}, false, err
+	}
+
+	value, found := repository.users[id]
+
+	return value, found, nil
 }

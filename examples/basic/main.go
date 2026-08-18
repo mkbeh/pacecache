@@ -47,7 +47,7 @@ func run(ctx context.Context) error {
 	}
 	defer users.Close()
 
-	loadUser := func(id int64) (user, bool, error) {
+	loadUser := func(id int64) (user, pacecache.LookupStatus, error) {
 		return users.GetOrLoad(
 			ctx,
 			id,
@@ -58,52 +58,72 @@ func run(ctx context.Context) error {
 	}
 
 	// The first lookup loads the user from the underlying repository.
-	first, found, err := loadUser(42)
+	first, status, err := loadUser(42)
 	if err != nil {
 		return fmt.Errorf("load user: %w", err)
 	}
-
-	fmt.Println("positive cache:")
-	fmt.Printf("- first lookup: found=%t user=%+v\n", found, first)
-
-	// The second lookup is served from the cache.
-	second, found, err := loadUser(42)
-	if err != nil {
-		return fmt.Errorf("load cached user: %w", err)
+	if status != pacecache.LookupHit {
+		return fmt.Errorf("load user 42: status=%d", status)
 	}
 
-	fmt.Printf("- second lookup: found=%t user=%+v\n", found, second)
+	fmt.Println("positive cache:")
+	fmt.Printf("- first lookup: status=hit user=%+v\n", first)
+
+	// A direct lookup reads the already cached value without invoking the loader.
+	cached, status := users.Get(42)
+	if status != pacecache.LookupHit {
+		return fmt.Errorf("get cached user: status=%d", status)
+	}
+
+	fmt.Printf("- direct lookup: user=%+v\n", cached)
+
+	// GetEntry exposes cache metadata without changing the value lookup semantics.
+	entry, status := users.GetEntry(42)
+	if status != pacecache.LookupHit {
+		return fmt.Errorf("get cached entry: status=%d", status)
+	}
+
+	fmt.Printf("- entry has expiration: %t\n", !entry.ExpiresAt().IsZero())
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	// Not-found results are cached using the configured negative TTL.
-	_, found, err = loadUser(404)
+	_, status, err = loadUser(404)
 	if err != nil {
 		return fmt.Errorf("load missing user: %w", err)
+	}
+	if status != pacecache.LookupNegativeHit {
+		return fmt.Errorf("load user 404: status=%d", status)
 	}
 
 	fmt.Println()
 	fmt.Println("negative cache:")
-	fmt.Printf("- first lookup: found=%t\n", found)
+	fmt.Println("- first lookup: status=negative_hit")
 
-	_, found, err = loadUser(404)
+	_, status, err = loadUser(404)
 	if err != nil {
 		return fmt.Errorf("load cached missing user: %w", err)
 	}
+	if status != pacecache.LookupNegativeHit {
+		return fmt.Errorf("load cached user 404: status=%d", status)
+	}
 
-	fmt.Printf("- second lookup: found=%t\n", found)
+	fmt.Println("- second lookup: status=negative_hit")
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	// Explicit invalidation forces the next lookup to reload the value.
 	users.Invalidate(42)
 
-	reloaded, found, err := loadUser(42)
+	reloaded, status, err := loadUser(42)
 	if err != nil {
 		return fmt.Errorf("reload invalidated user: %w", err)
+	}
+	if status != pacecache.LookupHit {
+		return fmt.Errorf("reload user 42: status=%d", status)
 	}
 
 	fmt.Println()
 	fmt.Println("invalidation:")
-	fmt.Printf("- lookup after invalidation: found=%t user=%+v\n", found, reloaded)
+	fmt.Printf("- lookup after invalidation: status=hit user=%+v\n", reloaded)
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	stats := users.Stats()
