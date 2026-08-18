@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	// DefaultExpiration uses the cache's configured positive TTL.
+	// DefaultExpiration uses the cache's configured TTL.
 	DefaultExpiration time.Duration = 0
 
 	// NoExpiration disables time-based expiration for the entry.
@@ -23,10 +23,10 @@ const (
 
 // Cache is a bounded in-process cache for keys of type K and values of type V.
 //
-// Cache uses segmented exact LRU eviction and TTL expiration. Positive entries
-// may optionally use sliding expiration, while negative results always use
-// absolute expiration. GetOrLoad and GetOrLoadEntry provide cache-aside loading
-// and coalesce concurrent loads for the same key.
+// Cache uses segmented exact LRU eviction and TTL expiration with optional
+// sliding expiration. GetOrLoad and GetOrLoadEntry provide cache-aside loading
+// and coalesce concurrent loads for the same key. Loader not-found results are
+// returned to callers but are not stored.
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[K comparable, V any] struct {
@@ -42,9 +42,8 @@ type Cache[K comparable, V any] struct {
 	metrics   MetricsRegistration
 	closeOnce sync.Once
 
-	ttl         time.Duration
-	jitter      time.Duration
-	negativeTTL time.Duration
+	ttl    time.Duration
+	jitter time.Duration
 }
 
 // cacheState coordinates loads and mutations for one storage segment.
@@ -68,8 +67,8 @@ type invalidationTarget[K comparable] struct {
 // Name is used by diagnostics and metrics and must not be blank.
 //
 // Unless overridden by options, New uses production-oriented defaults for
-// capacity, segmentation, and positive TTL. Negative caching, metrics, and
-// background cleanup are disabled by default.
+// capacity, segmentation, and TTL. Metrics and background cleanup are disabled
+// by default.
 //
 // If metrics or background cleanup are configured, Close must be called to
 // release the associated resources.
@@ -99,9 +98,8 @@ func New[K comparable, V any](name string, options ...Option) (*Cache[K, V], err
 
 		cleanupPolicy: policy,
 
-		ttl:         settings.ttl,
-		jitter:      settings.jitter,
-		negativeTTL: settings.negativeTTL,
+		ttl:    settings.ttl,
+		jitter: settings.jitter,
 	}
 
 	if err := cache.registerMetrics(settings.metrics); err != nil {
@@ -157,10 +155,10 @@ func (cache *Cache[K, V]) Close() {
 	)
 }
 
-// Exists reports whether a live positive entry exists for key.
+// Exists reports whether a live entry exists for key.
 //
-// Negative, expired, and missing entries return false. Exists does not update
-// LRU recency, refresh sliding expiration, or affect lookup statistics.
+// Expired and missing entries return false. Exists does not update LRU recency,
+// refresh sliding expiration, or affect lookup statistics.
 //
 // An expired entry observed by Exists is removed from storage and contributes
 // to expiration statistics.
@@ -175,16 +173,15 @@ func (cache *Cache[K, V]) Exists(key K) bool {
 	return cache.store.existsAt(index, key, cache.store.now(), stats)
 }
 
-// RefreshTTL renews the expiration deadline of a live positive entry.
+// RefreshTTL renews the expiration deadline of a live entry.
 //
 // The entry is refreshed using the effective TTL with which it was stored.
-// RefreshTTL works independently of sliding expiration. A positive entry
-// without time-based expiration is considered live and returns true without
-// changing its state.
+// RefreshTTL works independently of sliding expiration. An entry without
+// time-based expiration is considered live and returns true without changing
+// its state.
 //
-// Negative, expired, and missing entries return false. An expired entry
-// observed by RefreshTTL is removed from storage and contributes to expiration
-// statistics.
+// Expired and missing entries return false. An expired entry observed by
+// RefreshTTL is removed from storage and contributes to expiration statistics.
 //
 // RefreshTTL does not update LRU recency or lookup statistics.
 func (cache *Cache[K, V]) RefreshTTL(key K) bool {
@@ -200,54 +197,37 @@ func (cache *Cache[K, V]) RefreshTTL(key K) bool {
 
 // Get returns the cached value for key.
 //
-// LookupHit is returned for a positive cache hit. LookupNegativeHit is
-// returned for a cached not-found result. LookupMiss is returned when no live
-// entry exists for key.
-//
-// Expired entries are always treated as misses. They are removed when observed,
-// by CleanupExpired, or by background cleanup when it is enabled. When sliding
-// expiration is enabled, a live positive hit refreshes the entry using the TTL
-// with which it was stored.
-func (cache *Cache[K, V]) Get(key K) (V, LookupStatus) {
+// found is true when a live entry exists. Expired entries are always treated as
+// misses and are removed when observed, by CleanupExpired, or by background
+// cleanup when it is enabled. When sliding expiration is enabled, a live hit
+// refreshes the entry using the TTL with which it was stored.
+func (cache *Cache[K, V]) Get(key K) (V, bool) {
 	var zero V
 
 	if !cache.initialized() {
-		return zero, LookupMiss
+		return zero, false
 	}
 
 	index := cache.store.segmentIndex(key)
 	stats := cache.stats.segment(index)
 
-	cached, ok := cache.store.lookupAt(index, key, cache.store.now(), stats)
-	if !ok {
-		return zero, LookupMiss
-	}
-
-	if !cached.found {
-		return zero, LookupNegativeHit
-	}
-
-	return cached.value, LookupHit
+	return cache.store.lookupAt(index, key, cache.store.now(), stats)
 }
 
 // GetEntry returns an immutable snapshot of the cached entry for key.
 //
 // GetEntry has the same lookup semantics as Get: it updates LRU recency,
 // contributes to lookup statistics, removes an observed expired entry, and
-// refreshes a live positive entry when sliding expiration is enabled.
+// refreshes a live expiring entry when sliding expiration is enabled.
 //
-// LookupHit returns a positive entry. LookupNegativeHit returns an entry whose
-// Value is the zero value of V and whose ExpiresAt reports the negative entry's
-// expiration. LookupMiss returns the zero Entry.
-//
-// For an entry stored with NoExpiration, Entry.ExpiresAt returns the zero time.
-// When sliding expiration refreshes an entry, ExpiresAt reflects the refreshed
-// deadline.
-func (cache *Cache[K, V]) GetEntry(key K) (Entry[V], LookupStatus) {
+// found is false when no live entry exists. For an entry stored with
+// NoExpiration, Entry.ExpiresAt returns the zero time. When sliding expiration
+// refreshes an entry, ExpiresAt reflects the refreshed deadline.
+func (cache *Cache[K, V]) GetEntry(key K) (Entry[V], bool) {
 	var zero Entry[V]
 
 	if !cache.initialized() {
-		return zero, LookupMiss
+		return zero, false
 	}
 
 	index := cache.store.segmentIndex(key)
@@ -255,29 +235,20 @@ func (cache *Cache[K, V]) GetEntry(key K) (Entry[V], LookupStatus) {
 
 	cached, ok := cache.store.lookupEntryAt(index, key, cache.store.now(), stats)
 	if !ok {
-		return zero, LookupMiss
-	}
-
-	expiresAt := cache.store.expiresAt(cached.deadline)
-
-	if !cached.found {
-		return Entry[V]{
-			expiresAt: expiresAt,
-		}, LookupNegativeHit
+		return zero, false
 	}
 
 	return Entry[V]{
 		value:     cached.value,
-		expiresAt: expiresAt,
-	}, LookupHit
+		expiresAt: cache.store.expiresAt(cached.deadline),
+	}, true
 }
 
-// GetOrLoad returns the cached result for key or obtains it from loader.
+// GetOrLoad returns the cached value for key or obtains it from loader.
 //
-// A loader result with found=true is cached using the positive TTL. A result
-// with found=false and a nil error represents a successful negative lookup and
-// is cached only when negative caching is enabled with WithNegativeTTL.
-// Loader errors are never cached.
+// A loader result with found=true is cached using the configured default TTL.
+// A result with found=false and a nil error is returned without creating a
+// cache entry. Loader errors are never cached.
 //
 // Concurrent misses for the same key are coalesced. The loader runs with the
 // context of the caller that starts the shared load. Other callers may stop
@@ -290,38 +261,27 @@ func (cache *Cache[K, V]) GetEntry(key K) (Entry[V], LookupStatus) {
 // ErrLoadSuperseded. Mutations of other keys do not affect the load, even when
 // those keys share the same segment.
 //
-// LookupHit is returned for a positive cached or successfully published value.
-// LookupNegativeHit is returned when a cached negative entry exists or a
-// negative loader result is published because negative caching is enabled.
-// If loader reports found=false while negative caching is disabled, no cache
-// entry is created and GetOrLoad returns LookupMiss.
-//
-// When err is non-nil, the returned value is the zero value of V and status is
-// LookupMiss.
+// When err is non-nil, the returned value is the zero value of V and found is
+// false.
 func (cache *Cache[K, V]) GetOrLoad(
 	ctx context.Context,
 	key K,
 	loader Loader[V],
-) (V, LookupStatus, error) {
+) (V, bool, error) {
 	result, err := cache.getOrLoad(ctx, key, loader)
 	if err != nil {
 		var zero V
 
-		return zero, LookupMiss, err
+		return zero, false, err
 	}
 
-	return result.value, result.status, nil
+	return result.value, result.found, nil
 }
 
 // GetOrLoadEntry returns an immutable cache entry snapshot for key or obtains
 // the value from loader and publishes it before returning the snapshot.
 //
-// LookupHit is returned for a positive cached or successfully published value.
-// LookupNegativeHit is returned when a cached negative entry exists or a
-// negative loader result is published because negative caching is enabled.
-// If loader reports found=false while negative caching is disabled, no cache
-// entry is created and GetOrLoadEntry returns the zero Entry with LookupMiss.
-//
+// A loader result with found=false is returned as a miss and is not stored.
 // GetOrLoadEntry has the same lookup, singleflight, publication-barrier, LRU,
 // sliding-expiration, and statistics semantics as GetOrLoad. The two methods
 // differ only in the shape of the returned result.
@@ -334,31 +294,21 @@ func (cache *Cache[K, V]) GetOrLoadEntry(
 	ctx context.Context,
 	key K,
 	loader Loader[V],
-) (Entry[V], LookupStatus, error) {
+) (Entry[V], bool, error) {
 	var zero Entry[V]
 
 	result, err := cache.getOrLoad(ctx, key, loader)
 	if err != nil {
-		return zero, LookupMiss, err
+		return zero, false, err
 	}
-
-	status := result.status
-	if status == LookupMiss {
-		return zero, LookupMiss, nil
-	}
-
-	expiresAt := cache.store.expiresAt(result.deadline)
-
-	if status == LookupNegativeHit {
-		return Entry[V]{
-			expiresAt: expiresAt,
-		}, LookupNegativeHit, nil
+	if !result.found {
+		return zero, false, nil
 	}
 
 	return Entry[V]{
 		value:     result.value,
-		expiresAt: expiresAt,
-	}, LookupHit, nil
+		expiresAt: cache.store.expiresAt(result.deadline),
+	}, true, nil
 }
 
 // getOrLoad implements the shared operation behind GetOrLoad and
@@ -419,31 +369,24 @@ func (cache *Cache[K, V]) getOrLoad(
 				return loadResult[V]{}, err
 			}
 
-			if !found {
+			loaded := loadResult[V]{
+				value: value,
+				found: found,
+			}
+
+			var refreshTTL time.Duration
+
+			if found {
+				refreshTTL = cache.effectiveExpirationTTL(DefaultExpiration)
+				loaded.deadline = deadlineAfter(finishedAt, refreshTTL)
+			} else {
 				var zero V
-				value = zero
+				loaded.value = zero
 			}
-
-			var (
-				deadline   int64
-				refreshTTL time.Duration
-			)
-
-			switch {
-			case found:
-				refreshTTL = cache.effectiveExpirationTTL(
-					DefaultExpiration,
-				)
-				deadline = deadlineAfter(finishedAt, refreshTTL)
-
-			case cache.negativeTTL > 0:
-				deadline = deadlineAfter(finishedAt, cache.negativeTTL)
-			}
-
-			loaded := newLoadResult(value, found, deadline)
 
 			// Publication is ordered with Set and invalidation. A mutation that
-			// wins first makes this load result stale for every waiter.
+			// wins first makes this successful loader result stale for every waiter,
+			// including a not-found result that would otherwise not be stored.
 			state.mu.RLock()
 
 			if callState.Forgotten() {
@@ -454,7 +397,9 @@ func (cache *Cache[K, V]) getOrLoad(
 				return loadResult[V]{}, ErrLoadSuperseded
 			}
 
-			cache.storeLoaded(index, key, loaded, refreshTTL)
+			if loaded.found {
+				cache.store.setAt(index, key, loaded.value, refreshTTL, loaded.deadline, stats)
+			}
 
 			state.mu.RUnlock()
 
@@ -480,11 +425,11 @@ func (cache *Cache[K, V]) getOrLoad(
 	}
 }
 
-// Set stores a positive value in the cache.
+// Set stores a value in the cache.
 //
-// DefaultExpiration uses the cache's configured positive TTL. A positive
-// expiration overrides the configured TTL for this entry. A negative
-// expiration disables time-based expiration.
+// DefaultExpiration uses the cache's configured TTL. A positive expiration
+// overrides the configured TTL for this entry. A negative expiration disables
+// time-based expiration.
 //
 // Set acts as a publication barrier. A successful loader result that was
 // already in flight for the same key is discarded with ErrLoadSuperseded if
@@ -506,7 +451,7 @@ func (cache *Cache[K, V]) Set(
 
 	state.group.Forget(key)
 
-	cache.storePositive(index, key, value, expiration, cache.store.now())
+	cache.storeValue(index, key, value, expiration, cache.store.now())
 
 	state.mu.Unlock()
 }
@@ -675,37 +620,7 @@ func (cache *Cache[K, V]) invalidateOne(index int, key K) bool {
 	return removed
 }
 
-func (cache *Cache[K, V]) storeLoaded(
-	index int,
-	key K,
-	loaded loadResult[V],
-	refreshTTL time.Duration,
-) {
-	if loaded.status == LookupMiss {
-		return
-	}
-
-	found := loaded.status == LookupHit
-
-	cached := cachedValue[V]{
-		found: found,
-	}
-
-	if found {
-		cached.value = loaded.value
-		cached.refreshTTL = refreshTTL
-	}
-
-	cache.store.setAt(
-		index,
-		key,
-		cached,
-		loaded.deadline,
-		cache.stats.segment(index),
-	)
-}
-
-func (cache *Cache[K, V]) storePositive(
+func (cache *Cache[K, V]) storeValue(
 	index int,
 	key K,
 	value V,
@@ -717,11 +632,8 @@ func (cache *Cache[K, V]) storePositive(
 	cache.store.setAt(
 		index,
 		key,
-		cachedValue[V]{
-			value:      value,
-			found:      true,
-			refreshTTL: refreshTTL,
-		},
+		value,
+		refreshTTL,
 		deadlineAfter(now, refreshTTL),
 		cache.stats.segment(index),
 	)

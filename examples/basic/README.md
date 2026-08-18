@@ -4,10 +4,10 @@ This example demonstrates a typical cache-aside workflow with `pacecache` and an
 
 **It demonstrates:**
 
-- Configuring a bounded generic cache with TTL, jitter, and negative caching
+- Configuring a bounded generic cache with TTL and jitter
 - Loading missing values through `GetOrLoad`
 - Reading cached values and entry metadata with `Get` and `GetEntry`
-- Caching not-found results with a negative TTL
+- Returning not-found loader results without storing them
 - Invalidating cached data and reloading it from the underlying repository
 - Inspecting cumulative cache statistics
 
@@ -25,34 +25,35 @@ Or from the repository root:
 go run ./examples/basic
 ```
 
+The example is a standalone Go module connected to the repository through `go.work`, so it uses the local `pacecache` checkout.
+
 ## Example output
 
 ```text
-positive cache:
-- first lookup: status=hit user={ID:42 Name:Ada}
+cache:
+- first lookup: found=true user={ID:42 Name:Ada}
 - direct lookup: user={ID:42 Name:Ada}
 - entry has expiration: true
 - repository loads: 1
 
-negative cache:
-- first lookup: status=negative_hit
-- second lookup: status=negative_hit
-- repository loads: 2
-
-invalidation:
-- lookup after invalidation: status=hit user={ID:42 Name:Ada}
+not found:
+- first lookup: found=false
+- second lookup: found=false
 - repository loads: 3
 
+invalidation:
+- lookup after invalidation: found=true user={ID:42 Name:Ada}
+- repository loads: 4
+
 stats:
-- entries=2 hits=2 negative_hits=1 misses=3
-- loads_found=2 loads_not_found=1 load_errors=0
+- entries=1 hits=2 misses=4
+- loads_found=2 loads_not_found=2 load_errors=0
 - invalidated_keys=1 evictions=0 expirations=0
 ```
 
 The first lookup for user `42` loads the value from the repository and caches it. Subsequent `Get` and `GetEntry`
 calls read the cached entry without invoking the repository again.
 
-The first lookup for missing user `404` stores a negative cache entry, so the second `GetOrLoad` returns
-`LookupNegativeHit` without another repository call.
+User `404` does not exist. Not-found loader results are not stored, so both `GetOrLoad` calls reach the repository.
 
 After `Invalidate(42)`, the next `GetOrLoad` reloads the user from the repository and publishes a new cache entry.

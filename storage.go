@@ -10,15 +10,13 @@ import (
 const defaultStorageSegmentCount = 32
 
 type entry[K comparable, V any] struct {
-	key K
-
+	key   K
 	value V
-	found bool
 
-	// refreshTTL stores the effective positive TTL used by sliding expiration.
-	// Any configured jitter is selected when the entry is stored and remains
-	// stable until the entry is overwritten. Zero means that the entry is not
-	// eligible for sliding expiration.
+	// refreshTTL stores the effective TTL used by sliding expiration. Any
+	// configured jitter is selected when the entry is stored and remains stable
+	// until the entry is overwritten. Zero means that the entry is not eligible
+	// for sliding expiration.
 	refreshTTL time.Duration
 
 	// deadline stores the absolute monotonic deadline in nanoseconds relative to
@@ -221,7 +219,7 @@ func (storage *storage[K, V]) lookupAt(
 	key K,
 	now int64,
 	stats *segmentStats,
-) (cachedValue[V], bool) {
+) (V, bool) {
 	return storage.segments[index].lookup(key, now, stats)
 }
 
@@ -239,7 +237,7 @@ func (storage *storage[K, V]) getAt(
 	key K,
 	now int64,
 	stats *segmentStats,
-) (cachedValue[V], bool) {
+) (V, bool) {
 	return storage.segments[index].get(key, now, stats)
 }
 
@@ -255,11 +253,12 @@ func (storage *storage[K, V]) getEntryAt(
 func (storage *storage[K, V]) setAt(
 	index int,
 	key K,
-	value cachedValue[V],
+	value V,
+	refreshTTL time.Duration,
 	deadline int64,
 	stats *segmentStats,
 ) {
-	storage.segments[index].set(key, value, deadline, stats)
+	storage.segments[index].set(key, value, refreshTTL, deadline, stats)
 }
 
 func (storage *storage[K, V]) deleteAt(
@@ -295,37 +294,31 @@ func (storage *storage[K, V]) cleanupExpired(
 ) int64 {
 	var removed int64
 
+	remainingEntries := policy.entryBudget
+
 	for {
-		remaining := policy.entryBudget
-		pending := false
+		hasMore := false
 
 		for index := range storage.segments {
-			// Yield after processing the configured entry budget so a large
-			// cleanup cannot monopolize the current processor.
-			if remaining == 0 {
+			if remainingEntries == 0 {
 				runtime.Gosched()
-				remaining = policy.entryBudget
+				remainingEntries = policy.entryBudget
 			}
 
-			limit := min(policy.batchSize, remaining)
-
-			count, segmentPending := storage.cleanupExpiredAt(index, now, limit, stats.segment(index))
+			batchLimit := min(policy.batchSize, remainingEntries)
+			count, pending := storage.cleanupExpiredAt(index, now, batchLimit, stats.segment(index))
 
 			removed += int64(count)
-			remaining -= count
-
-			// A pending segment still contains entries expired at the cleanup
-			// snapshot represented by now and requires another round.
-			pending = pending || segmentPending
+			remainingEntries -= count
+			hasMore = hasMore || pending
 		}
 
-		if !pending {
+		if !hasMore {
 			return removed
 		}
 
-		// Give other goroutines a chance to run before starting another full
-		// pass over the segments.
 		runtime.Gosched()
+		remainingEntries = policy.entryBudget
 	}
 }
 
@@ -352,7 +345,7 @@ func (segment *storageSegment[K, V]) exists(
 		return false
 	}
 
-	return item.found
+	return true
 }
 
 func (segment *storageSegment[K, V]) refreshTTL(
@@ -378,18 +371,18 @@ func (segment *storageSegment[K, V]) refreshTTL(
 		return false
 	}
 
-	if !item.found {
-		return false
+	// A live entry without time-based expiration exists, but there is no
+	// deadline to refresh.
+	if item.refreshTTL == 0 {
+		return true
 	}
 
-	if item.refreshTTL > 0 {
-		newDeadline := deadlineAfter(now, item.refreshTTL)
+	deadline := deadlineAfter(now, item.refreshTTL)
 
-		// now may have been captured before waiting for the segment lock.
-		// Never let an older refresh shorten a newer deadline.
-		if newDeadline > item.deadline {
-			segment.expirations.update(item, newDeadline)
-		}
+	// now may have been captured before waiting for the segment lock. Never let
+	// an older refresh shorten a deadline established by a newer operation.
+	if deadline > item.deadline {
+		segment.expirations.update(item, deadline)
 	}
 
 	return true
@@ -399,28 +392,24 @@ func (segment *storageSegment[K, V]) lookup(
 	key K,
 	now int64,
 	stats *segmentStats,
-) (cachedValue[V], bool) {
+) (V, bool) {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
-	cached, ok := segment.getLocked(key, now, stats)
+	value, ok := segment.getLocked(key, now, stats)
 	if !ok {
 		if stats != nil {
 			stats.missCount++
 		}
 
-		return cached, false
+		return value, false
 	}
 
 	if stats != nil {
-		if cached.found {
-			stats.hitCount++
-		} else {
-			stats.negativeHitCount++
-		}
+		stats.hitCount++
 	}
 
-	return cached, true
+	return value, true
 }
 
 func (segment *storageSegment[K, V]) lookupEntry(
@@ -441,11 +430,7 @@ func (segment *storageSegment[K, V]) lookupEntry(
 	}
 
 	if stats != nil {
-		if cached.found {
-			stats.hitCount++
-		} else {
-			stats.negativeHitCount++
-		}
+		stats.hitCount++
 	}
 
 	return cached, true
@@ -455,7 +440,7 @@ func (segment *storageSegment[K, V]) get(
 	key K,
 	now int64,
 	stats *segmentStats,
-) (cachedValue[V], bool) {
+) (V, bool) {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
@@ -510,7 +495,6 @@ func (segment *storageSegment[K, V]) getEntryLocked(
 
 	return cachedEntry[V]{
 		value:    item.value,
-		found:    item.found,
 		deadline: item.deadline,
 	}, true
 }
@@ -519,10 +503,10 @@ func (segment *storageSegment[K, V]) getLocked(
 	key K,
 	now int64,
 	stats *segmentStats,
-) (cachedValue[V], bool) {
+) (V, bool) {
 	item, ok := segment.entries[key]
 	if !ok {
-		var zero cachedValue[V]
+		var zero V
 
 		return zero, false
 	}
@@ -536,7 +520,7 @@ func (segment *storageSegment[K, V]) getLocked(
 			stats.expirationCount++
 		}
 
-		var zero cachedValue[V]
+		var zero V
 
 		return zero, false
 	}
@@ -552,18 +536,16 @@ func (segment *storageSegment[K, V]) getLocked(
 	}
 
 	// A live hit always updates LRU recency. Sliding expiration, when enabled,
-	// refreshes positive expiring entries atomically under the same segment lock.
+	// refreshes expiring entries atomically under the same segment lock.
 	segment.moveToFrontLocked(item)
 
-	return cachedValue[V]{
-		value: item.value,
-		found: item.found,
-	}, true
+	return item.value, true
 }
 
 func (segment *storageSegment[K, V]) set(
 	key K,
-	cached cachedValue[V],
+	value V,
+	refreshTTL time.Duration,
 	deadline int64,
 	stats *segmentStats,
 ) {
@@ -573,20 +555,18 @@ func (segment *storageSegment[K, V]) set(
 		return
 	}
 
-	// Sliding expiration applies only to positive expiring entries.
-	if !cached.found || deadline == 0 {
-		cached.refreshTTL = 0
+	if deadline == 0 {
+		refreshTTL = 0
 	}
 
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
 	if item, ok := segment.entries[key]; ok {
-		item.value = cached.value
-		item.found = cached.found
-		item.refreshTTL = cached.refreshTTL
-
+		item.value = value
+		item.refreshTTL = refreshTTL
 		segment.expirations.update(item, deadline)
+
 		segment.moveToFrontLocked(item)
 
 		return
@@ -605,13 +585,8 @@ func (segment *storageSegment[K, V]) set(
 		delete(segment.entries, item.key)
 
 		item.key = key
-		item.value = cached.value
-		item.found = cached.found
-		item.refreshTTL = cached.refreshTTL
-
-		// remove detaches the victim from the expiration index but deliberately
-		// leaves its deadline unchanged. Reset it so update treats the reused
-		// entry as having no previous expiration membership.
+		item.value = value
+		item.refreshTTL = refreshTTL
 		item.deadline = 0
 
 		segment.expirations.update(item, deadline)
@@ -623,9 +598,8 @@ func (segment *storageSegment[K, V]) set(
 
 	item := &entry[K, V]{
 		key:        key,
-		value:      cached.value,
-		found:      cached.found,
-		refreshTTL: cached.refreshTTL,
+		value:      value,
+		refreshTTL: refreshTTL,
 	}
 
 	segment.expirations.update(item, deadline)
@@ -683,22 +657,17 @@ func (segment *storageSegment[K, V]) cleanupExpired(
 	dueID := segment.expirations.dueBucketID(now)
 	removed := 0
 
-	for removed < limit {
-		if !segment.expirations.hasDueBucket(dueID) {
-			return removed, false
-		}
-
+	for removed < limit &&
+		segment.expirations.hasDueBucket(dueID) {
 		item := segment.expirations.popRootEntry()
 
-		// The expiration index and storage map must always reference the same
-		// entry. A mismatch indicates an internal consistency bug.
-		if segment.entries[item.key] != item {
+		current, ok := segment.entries[item.key]
+		if !ok || current != item {
 			panic("pacecache: expiration index is inconsistent with storage")
 		}
 
 		delete(segment.entries, item.key)
 		segment.unlinkLocked(item)
-
 		removed++
 
 		if stats != nil {

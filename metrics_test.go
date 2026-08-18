@@ -66,8 +66,8 @@ func TestMetricsRegistrationLifecycle(t *testing.T) {
 		t.Fatalf("registration Close calls = %d, want 1", got)
 	}
 
-	if value, status := cache.Get("key"); value != 42 || status != LookupHit {
-		t.Fatalf("Get() after Close = (%d, %v), want (42, LookupHit)", value, status)
+	if value, found := cache.Get("key"); value != 42 || !found {
+		t.Fatalf("Get() after Close = (%d, %t), want (42, true)", value, found)
 	}
 }
 

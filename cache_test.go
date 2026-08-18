@@ -35,21 +35,21 @@ func TestCacheZeroValueAndNilReceiver(t *testing.T) {
 			if cache.RefreshTTL("key") {
 				t.Fatal("RefreshTTL() = true")
 			}
-			if value, status := cache.Get("key"); value != 0 || status != LookupMiss {
-				t.Fatalf("Get() = (%d, %v), want (0, LookupMiss)", value, status)
+			if value, found := cache.Get("key"); value != 0 || found {
+				t.Fatalf("Get() = (%d, %t), want (0, false)", value, found)
 			}
-			if entry, status := cache.GetEntry("key"); entry != (Entry[int]{}) || status != LookupMiss {
-				t.Fatalf("GetEntry() = (%+v, %v), want zero entry and LookupMiss", entry, status)
+			if entry, found := cache.GetEntry("key"); entry != (Entry[int]{}) || found {
+				t.Fatalf("GetEntry() = (%+v, %t), want zero entry and false", entry, found)
 			}
 
 			loader := func(context.Context) (int, bool, error) {
 				return 1, true, nil
 			}
-			if value, status, err := cache.GetOrLoad(context.Background(), "key", loader); value != 0 || status != LookupMiss || err == nil || err.Error() != "pacecache: cache is not initialized" {
-				t.Fatalf("GetOrLoad() = (%d, %v, %v)", value, status, err)
+			if value, found, err := cache.GetOrLoad(context.Background(), "key", loader); value != 0 || found || err == nil || err.Error() != "pacecache: cache is not initialized" {
+				t.Fatalf("GetOrLoad() = (%d, %t, %v)", value, found, err)
 			}
-			if entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", loader); entry != (Entry[int]{}) || status != LookupMiss || err == nil || err.Error() != "pacecache: cache is not initialized" {
-				t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v)", entry, status, err)
+			if entry, found, err := cache.GetOrLoadEntry(context.Background(), "key", loader); entry != (Entry[int]{}) || found || err == nil || err.Error() != "pacecache: cache is not initialized" {
+				t.Fatalf("GetOrLoadEntry() = (%+v, %t, %v)", entry, found, err)
 			}
 
 			cache.Set("key", 1, NoExpiration)
@@ -75,7 +75,6 @@ func TestNewCacheInitializesCore(t *testing.T) {
 		WithSegmentCount(4),
 		WithTTL(2*time.Minute),
 		WithJitter(5*time.Second),
-		WithNegativeTTL(30*time.Second),
 		WithSlidingExpiration(),
 		WithCleanupBatchSize(7),
 		WithCleanupEntryBudget(11),
@@ -84,8 +83,8 @@ func TestNewCacheInitializesCore(t *testing.T) {
 	if cache.Name() != "users" {
 		t.Fatalf("Name() = %q, want %q", cache.Name(), "users")
 	}
-	if cache.ttl != 2*time.Minute || cache.jitter != 5*time.Second || cache.negativeTTL != 30*time.Second {
-		t.Fatalf("cache TTL settings = (%v, %v, %v)", cache.ttl, cache.jitter, cache.negativeTTL)
+	if cache.ttl != 2*time.Minute || cache.jitter != 5*time.Second {
+		t.Fatalf("cache TTL settings = (%v, %v)", cache.ttl, cache.jitter)
 	}
 	if cache.cleanupPolicy != (cleanupPolicy{batchSize: 7, entryBudget: 11}) {
 		t.Fatalf("cleanupPolicy = %+v", cache.cleanupPolicy)
@@ -127,9 +126,9 @@ func TestCacheSetGetEntryAndLRU(t *testing.T) {
 	cache.Set("first", 1, DefaultExpiration)
 	firstInternal := cacheEntryForTest(t, cache, "first")
 
-	entry, status := cache.GetEntry("first")
-	if status != LookupHit || entry.Value() != 1 {
-		t.Fatalf("GetEntry(first) = (%+v, %v)", entry, status)
+	entry, found := cache.GetEntry("first")
+	if !found || entry.Value() != 1 {
+		t.Fatalf("GetEntry(first) = (%+v, %v)", entry, found)
 	}
 	wantExpiresAt := cache.store.expiresAt(firstInternal.deadline)
 	if !entry.ExpiresAt().Equal(wantExpiresAt) {
@@ -137,29 +136,29 @@ func TestCacheSetGetEntryAndLRU(t *testing.T) {
 	}
 
 	cache.Set("second", 2, NoExpiration)
-	entry, status = cache.GetEntry("second")
-	if status != LookupHit || entry.Value() != 2 || !entry.ExpiresAt().IsZero() {
-		t.Fatalf("GetEntry(second) = (%+v, %v), want no-expiration hit", entry, status)
+	entry, found = cache.GetEntry("second")
+	if !found || entry.Value() != 2 || !entry.ExpiresAt().IsZero() {
+		t.Fatalf("GetEntry(second) = (%+v, %v), want no-expiration hit", entry, found)
 	}
 
-	if value, status := cache.Get("first"); value != 1 || status != LookupHit {
-		t.Fatalf("Get(first) = (%d, %v)", value, status)
+	if value, found := cache.Get("first"); value != 1 || !found {
+		t.Fatalf("Get(first) = (%d, %v)", value, found)
 	}
 
 	cache.Set("third", 3, NoExpiration)
-	if _, status := cache.Get("second"); status != LookupMiss {
-		t.Fatalf("second status after eviction = %v, want LookupMiss", status)
+	if _, found := cache.Get("second"); found {
+		t.Fatalf("second found after eviction = %v, want false", found)
 	}
-	if value, status := cache.Get("first"); value != 1 || status != LookupHit {
-		t.Fatalf("first after eviction = (%d, %v)", value, status)
+	if value, found := cache.Get("first"); value != 1 || !found {
+		t.Fatalf("first after eviction = (%d, %v)", value, found)
 	}
-	if value, status := cache.Get("third"); value != 3 || status != LookupHit {
-		t.Fatalf("third after insertion = (%d, %v)", value, status)
+	if value, found := cache.Get("third"); value != 3 || !found {
+		t.Fatalf("third after insertion = (%d, %v)", value, found)
 	}
 
 	cache.Set("first", 10, NoExpiration)
-	if value, status := cache.Get("first"); value != 10 || status != LookupHit {
-		t.Fatalf("updated first = (%d, %v), want (10, LookupHit)", value, status)
+	if value, found := cache.Get("first"); value != 10 || !found {
+		t.Fatalf("updated first = (%d, %v), want (10, true)", value, found)
 	}
 	if got := cache.Stats().EvictionCount; got != 1 {
 		t.Fatalf("EvictionCount = %d, want 1", got)
@@ -173,67 +172,54 @@ func TestCacheExistsAndRefreshTTL(t *testing.T) {
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(10*time.Second),
-		WithNegativeTTL(10*time.Second),
 	)
 
-	cache.Set("positive", 1, DefaultExpiration)
+	cache.Set("expiring", 1, DefaultExpiration)
 	cache.Set("forever", 2, NoExpiration)
-	_, _, err := cache.GetOrLoad(context.Background(), "negative", func(context.Context) (int, bool, error) {
-		return 99, false, nil
-	})
-	if err != nil {
-		t.Fatalf("negative GetOrLoad() error = %v", err)
-	}
 
 	beforeStats := cache.Stats()
-	beforeHead, beforeTail := cacheLRUEndsForTest(cache, "positive")
+	beforeHead, beforeTail := cacheLRUEndsForTest(cache, "expiring")
 
-	if !cache.Exists("positive") {
-		t.Fatal("Exists(positive) = false")
-	}
-	if cache.Exists("negative") {
-		t.Fatal("Exists(negative) = true")
+	if !cache.Exists("expiring") {
+		t.Fatal("Exists(expiring) = false")
 	}
 	if cache.Exists("missing") {
 		t.Fatal("Exists(missing) = true")
 	}
 
 	afterExists := cache.Stats()
-	if afterExists.HitCount != beforeStats.HitCount || afterExists.NegativeHitCount != beforeStats.NegativeHitCount || afterExists.MissCount != beforeStats.MissCount {
+	if afterExists.HitCount != beforeStats.HitCount || afterExists.MissCount != beforeStats.MissCount {
 		t.Fatalf("Exists changed lookup stats: before=%+v after=%+v", beforeStats, afterExists)
 	}
-	assertCacheLRUEndsForTest(t, cache, "positive", beforeHead, beforeTail)
+	assertCacheLRUEndsForTest(t, cache, "expiring", beforeHead, beforeTail)
 
-	index := cache.store.segmentIndex("positive")
+	index := cache.store.segmentIndex("expiring")
 	segment := &cache.store.segments[index]
 	segment.mu.Lock()
-	positive := segment.entries["positive"]
+	item := segment.entries["expiring"]
 	oldDeadline := cache.store.now() + int64(time.Second)
-	segment.expirations.update(positive, oldDeadline)
+	segment.expirations.update(item, oldDeadline)
 	segment.mu.Unlock()
 
-	if !cache.RefreshTTL("positive") {
-		t.Fatal("RefreshTTL(positive) = false")
+	if !cache.RefreshTTL("expiring") {
+		t.Fatal("RefreshTTL(expiring) = false")
 	}
-	refreshed := cacheEntryForTest(t, cache, "positive")
+	refreshed := cacheEntryForTest(t, cache, "expiring")
 	if refreshed.deadline <= oldDeadline {
 		t.Fatalf("refreshed deadline = %d, want > %d", refreshed.deadline, oldDeadline)
 	}
 	if !cache.RefreshTTL("forever") {
 		t.Fatal("RefreshTTL(forever) = false")
 	}
-	if cache.RefreshTTL("negative") {
-		t.Fatal("RefreshTTL(negative) = true")
-	}
 	if cache.RefreshTTL("missing") {
 		t.Fatal("RefreshTTL(missing) = true")
 	}
 
 	afterRefresh := cache.Stats()
-	if afterRefresh.HitCount != afterExists.HitCount || afterRefresh.NegativeHitCount != afterExists.NegativeHitCount || afterRefresh.MissCount != afterExists.MissCount {
+	if afterRefresh.HitCount != afterExists.HitCount || afterRefresh.MissCount != afterExists.MissCount {
 		t.Fatalf("RefreshTTL changed lookup stats: before=%+v after=%+v", afterExists, afterRefresh)
 	}
-	assertCacheLRUEndsForTest(t, cache, "positive", beforeHead, beforeTail)
+	assertCacheLRUEndsForTest(t, cache, "expiring", beforeHead, beforeTail)
 
 	cache.Set("expired_exists", 3, DefaultExpiration)
 	cache.Set("expired_refresh", 4, DefaultExpiration)
@@ -258,27 +244,20 @@ func TestCacheGetAndGetEntrySemantics(t *testing.T) {
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(10*time.Second),
-		WithNegativeTTL(5*time.Second),
 		WithSlidingExpiration(),
 	)
 
-	cache.Set("positive", 42, DefaultExpiration)
+	cache.Set("expiring", 42, DefaultExpiration)
 	cache.Set("forever", 7, NoExpiration)
-	_, _, err := cache.GetOrLoad(context.Background(), "negative", func(context.Context) (int, bool, error) {
-		return 123, false, nil
-	})
-	if err != nil {
-		t.Fatalf("negative GetOrLoad() error = %v", err)
-	}
 
 	oldDeadline := cache.store.now() + int64(time.Second)
-	setCacheDeadlineForTest(t, cache, "positive", oldDeadline)
+	setCacheDeadlineForTest(t, cache, "expiring", oldDeadline)
 
-	entry, status := cache.GetEntry("positive")
-	if status != LookupHit || entry.Value() != 42 {
-		t.Fatalf("GetEntry(positive) = (%+v, %v)", entry, status)
+	entry, found := cache.GetEntry("expiring")
+	if !found || entry.Value() != 42 {
+		t.Fatalf("GetEntry(expiring) = (%+v, %t)", entry, found)
 	}
-	stored := cacheEntryForTest(t, cache, "positive")
+	stored := cacheEntryForTest(t, cache, "expiring")
 	if stored.deadline <= oldDeadline {
 		t.Fatalf("sliding deadline = %d, want > %d", stored.deadline, oldDeadline)
 	}
@@ -286,21 +265,16 @@ func TestCacheGetAndGetEntrySemantics(t *testing.T) {
 		t.Fatalf("GetEntry deadline = %v, want stored deadline %v", entry.ExpiresAt(), cache.store.expiresAt(stored.deadline))
 	}
 
-	entry, status = cache.GetEntry("negative")
-	if status != LookupNegativeHit || entry.Value() != 0 || entry.ExpiresAt().IsZero() {
-		t.Fatalf("GetEntry(negative) = (%+v, %v)", entry, status)
+	entry, found = cache.GetEntry("forever")
+	if !found || entry.Value() != 7 || !entry.ExpiresAt().IsZero() {
+		t.Fatalf("GetEntry(forever) = (%+v, %t)", entry, found)
 	}
 
-	entry, status = cache.GetEntry("forever")
-	if status != LookupHit || entry.Value() != 7 || !entry.ExpiresAt().IsZero() {
-		t.Fatalf("GetEntry(forever) = (%+v, %v)", entry, status)
+	if value, found := cache.Get("expiring"); !found || value != 42 {
+		t.Fatalf("Get(expiring) = (%d, %t)", value, found)
 	}
-
-	if value, status := cache.Get("negative"); value != 0 || status != LookupNegativeHit {
-		t.Fatalf("Get(negative) = (%d, %v)", value, status)
-	}
-	if entry, status := cache.GetEntry("missing"); entry != (Entry[int]{}) || status != LookupMiss {
-		t.Fatalf("GetEntry(missing) = (%+v, %v)", entry, status)
+	if entry, found := cache.GetEntry("missing"); entry != (Entry[int]{}) || found {
+		t.Fatalf("GetEntry(missing) = (%+v, %t)", entry, found)
 	}
 }
 
@@ -343,17 +317,17 @@ func TestCacheSlidingExpirationReusesJitteredTTL(t *testing.T) {
 
 		before := cache.store.now()
 
-		entry, status := cache.GetEntry("key")
+		entry, found := cache.GetEntry("key")
 
 		after := cache.store.now()
 		stored = cacheEntryForTest(t, cache, "key")
 
-		if status != LookupHit || entry.Value() != 42 {
+		if !found || entry.Value() != 42 {
 			t.Fatalf(
 				"iteration %d GetEntry() = (%+v, %v)",
 				iteration,
 				entry,
-				status,
+				found,
 			)
 		}
 		if stored.refreshTTL != effectiveTTL {
@@ -402,25 +376,25 @@ func TestCacheGetOrLoadPositive(t *testing.T) {
 		return 42, true, nil
 	}
 
-	value, status, err := cache.GetOrLoad(context.Background(), "key", loader)
-	if err != nil || status != LookupHit || value != 42 {
-		t.Fatalf("GetOrLoad() = (%d, %v, %v)", value, status, err)
+	value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
+	if err != nil || !found || value != 42 {
+		t.Fatalf("GetOrLoad() = (%d, %v, %v)", value, found, err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("loader calls = %d, want 1", calls.Load())
 	}
 
 	stored := cacheEntryForTest(t, cache, "key")
-	if !stored.found || stored.value != 42 || stored.deadline == 0 {
+	if stored.value != 42 || stored.deadline == 0 {
 		t.Fatalf("stored entry = %+v", stored)
 	}
 
-	entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", func(context.Context) (int, bool, error) {
+	entry, found, err := cache.GetOrLoadEntry(context.Background(), "key", func(context.Context) (int, bool, error) {
 		t.Fatal("loader was called for a cached value")
 		return 0, false, nil
 	})
-	if err != nil || status != LookupHit || entry.Value() != 42 {
-		t.Fatalf("GetOrLoadEntry(hit) = (%+v, %v, %v)", entry, status, err)
+	if err != nil || !found || entry.Value() != 42 {
+		t.Fatalf("GetOrLoadEntry(hit) = (%+v, %v, %v)", entry, found, err)
 	}
 	if !entry.ExpiresAt().Equal(cache.store.expiresAt(stored.deadline)) {
 		t.Fatalf("GetOrLoadEntry ExpiresAt = %v, want %v", entry.ExpiresAt(), cache.store.expiresAt(stored.deadline))
@@ -431,71 +405,44 @@ func TestCacheGetOrLoadPositive(t *testing.T) {
 	}
 }
 
-func TestCacheGetOrLoadNegative(t *testing.T) {
-	t.Run("negative caching enabled", func(t *testing.T) {
-		cache := mustNewCache[string, int](
-			t,
-			"negative-load",
-			WithMaxEntries(32),
-			WithSegmentCount(1),
-			WithNegativeTTL(time.Minute),
-		)
+func TestCacheGetOrLoadNotFoundIsNotCached(t *testing.T) {
+	cache := mustNewCache[string, int](
+		t,
+		"not-found-load",
+		WithMaxEntries(32),
+		WithSegmentCount(1),
+	)
 
-		var calls atomic.Int64
-		loader := func(context.Context) (int, bool, error) {
-			calls.Add(1)
-			return 99, false, nil
-		}
+	var calls atomic.Int64
+	loader := func(context.Context) (int, bool, error) {
+		calls.Add(1)
+		return 99, false, nil
+	}
 
-		value, status, err := cache.GetOrLoad(context.Background(), "key", loader)
-		if err != nil || status != LookupNegativeHit || value != 0 {
-			t.Fatalf("GetOrLoad() = (%d, %v, %v), want (0, LookupNegativeHit, nil)", value, status, err)
+	for range 2 {
+		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
+		if err != nil || found || value != 0 {
+			t.Fatalf("GetOrLoad() = (%d, %t, %v), want (0, false, nil)", value, found, err)
 		}
+	}
 
-		entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", loader)
-		if err != nil || status != LookupNegativeHit || entry.Value() != 0 || entry.ExpiresAt().IsZero() {
-			t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v)", entry, status, err)
-		}
-		if calls.Load() != 1 {
-			t.Fatalf("loader calls = %d, want 1", calls.Load())
-		}
-		if value, status := cache.Get("key"); value != 0 || status != LookupNegativeHit {
-			t.Fatalf("Get() = (%d, %v), want cached negative", value, status)
-		}
-		if got := cache.Stats().LoadNotFoundCount; got != 1 {
-			t.Fatalf("LoadNotFoundCount = %d, want 1", got)
-		}
-	})
+	entry, found, err := cache.GetOrLoadEntry(context.Background(), "key", loader)
+	if err != nil || found || entry != (Entry[int]{}) {
+		t.Fatalf("GetOrLoadEntry() = (%+v, %t, %v), want zero miss", entry, found, err)
+	}
 
-	t.Run("negative caching disabled", func(t *testing.T) {
-		cache := mustNewCache[string, int](
-			t,
-			"uncached-negative",
-			WithMaxEntries(32),
-			WithSegmentCount(1),
-		)
-
-		var calls atomic.Int64
-		loader := func(context.Context) (int, bool, error) {
-			calls.Add(1)
-			return 99, false, nil
-		}
-
-		entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", loader)
-		if err != nil || status != LookupMiss || entry != (Entry[int]{}) {
-			t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v), want zero miss", entry, status, err)
-		}
-		value, status, err := cache.GetOrLoad(context.Background(), "key", loader)
-		if err != nil || status != LookupMiss || value != 0 {
-			t.Fatalf("GetOrLoad() = (%d, %v, %v), want (0, LookupMiss, nil)", value, status, err)
-		}
-		if calls.Load() != 2 {
-			t.Fatalf("loader calls = %d, want 2", calls.Load())
-		}
-		if _, status := cache.Get("key"); status != LookupMiss {
-			t.Fatalf("Get() status = %v, want LookupMiss", status)
-		}
-	})
+	if calls.Load() != 3 {
+		t.Fatalf("loader calls = %d, want 3", calls.Load())
+	}
+	if cache.Exists("key") {
+		t.Fatal("not-found loader result became resident")
+	}
+	if got := cache.Stats().EntryCount; got != 0 {
+		t.Fatalf("EntryCount = %d, want 0", got)
+	}
+	if got := cache.Stats().LoadNotFoundCount; got != 3 {
+		t.Fatalf("LoadNotFoundCount = %d, want 3", got)
+	}
 }
 
 func TestCacheGetOrLoadValidationErrorsAndCancellation(t *testing.T) {
@@ -524,12 +471,12 @@ func TestCacheGetOrLoadValidationErrorsAndCancellation(t *testing.T) {
 		return 99, true, sentinel
 	}
 
-	value, status, err := cache.GetOrLoad(context.Background(), "error", failing)
-	if value != 0 || status != LookupMiss || !errors.Is(err, sentinel) {
-		t.Fatalf("failing GetOrLoad() = (%d, %v, %v)", value, status, err)
+	value, found, err := cache.GetOrLoad(context.Background(), "error", failing)
+	if value != 0 || found || !errors.Is(err, sentinel) {
+		t.Fatalf("failing GetOrLoad() = (%d, %v, %v)", value, found, err)
 	}
-	if _, status := cache.Get("error"); status != LookupMiss {
-		t.Fatalf("error result status = %v, want LookupMiss", status)
+	if _, found := cache.Get("error"); found {
+		t.Fatalf("error result found = %v, want false", found)
 	}
 	_, _, _ = cache.GetOrLoad(context.Background(), "error", failing)
 	if calls.Load() != 2 {
@@ -540,22 +487,22 @@ func TestCacheGetOrLoadValidationErrorsAndCancellation(t *testing.T) {
 	cancel()
 
 	var canceledCalls atomic.Int64
-	if value, status, err := cache.GetOrLoad(ctx, "canceled-miss", func(context.Context) (int, bool, error) {
+	if value, found, err := cache.GetOrLoad(ctx, "canceled-miss", func(context.Context) (int, bool, error) {
 		canceledCalls.Add(1)
 		return 1, true, nil
-	}); value != 0 || status != LookupMiss || !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled miss = (%d, %v, %v)", value, status, err)
+	}); value != 0 || found || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled miss = (%d, %v, %v)", value, found, err)
 	}
 	if canceledCalls.Load() != 0 {
 		t.Fatalf("loader calls for canceled miss = %d, want 0", canceledCalls.Load())
 	}
 
 	cache.Set("resident", 7, NoExpiration)
-	if value, status, err := cache.GetOrLoad(ctx, "resident", func(context.Context) (int, bool, error) {
+	if value, found, err := cache.GetOrLoad(ctx, "resident", func(context.Context) (int, bool, error) {
 		t.Fatal("loader called for resident value")
 		return 0, false, nil
-	}); err != nil || status != LookupHit || value != 7 {
-		t.Fatalf("canceled cache hit = (%d, %v, %v)", value, status, err)
+	}); err != nil || !found || value != 7 {
+		t.Fatalf("canceled cache hit = (%d, %v, %v)", value, found, err)
 	}
 
 	stats := cache.Stats()
@@ -578,23 +525,23 @@ func TestCacheGetOrLoadOwnerRechecksCache(t *testing.T) {
 	var calls atomic.Int64
 	done := make(chan cacheValueResult[int], 1)
 	go func() {
-		value, status, err := cache.GetOrLoad(context.Background(), "key", func(context.Context) (int, bool, error) {
+		value, found, err := cache.GetOrLoad(context.Background(), "key", func(context.Context) (int, bool, error) {
 			calls.Add(1)
 			return 99, true, nil
 		})
-		done <- cacheValueResult[int]{value: value, status: status, err: err}
+		done <- cacheValueResult[int]{value: value, found: found, err: err}
 	}()
 
 	waitForCacheCondition(t, time.Second, func() bool {
 		return cache.Stats().MissCount >= 1
 	})
 
-	cache.storePositive(0, "key", 42, NoExpiration, cache.store.now())
+	cache.storeValue(0, "key", 42, NoExpiration, cache.store.now())
 	state.mu.Unlock()
 
 	result := receiveCacheResult(t, done)
-	if result.err != nil || result.status != LookupHit || result.value != 42 {
-		t.Fatalf("GetOrLoad() = (%d, %v, %v), want cached value", result.value, result.status, result.err)
+	if result.err != nil || !result.found || result.value != 42 {
+		t.Fatalf("GetOrLoad() = (%d, %v, %v), want cached value", result.value, result.found, result.err)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("loader calls = %d, want 0", calls.Load())
@@ -651,35 +598,35 @@ func TestCacheGetOrLoadCoalescesMixedAPIs(t *testing.T) {
 			<-start
 
 			if index%2 == 0 {
-				value, status, err := cache.GetOrLoad(
+				value, found, err := cache.GetOrLoad(
 					contexts[index],
 					"key",
 					loader,
 				)
-				if err != nil || status != LookupHit || value != 42 {
+				if err != nil || !found || value != 42 {
 					errorsCh <- fmt.Errorf(
 						"GetOrLoad = (%d, %v, %v)",
 						value,
-						status,
+						found,
 						err,
 					)
 				}
 				return
 			}
 
-			entry, status, err := cache.GetOrLoadEntry(
+			entry, found, err := cache.GetOrLoadEntry(
 				contexts[index],
 				"key",
 				loader,
 			)
 			if err != nil ||
-				status != LookupHit ||
+				!found ||
 				entry.Value() != 42 ||
 				entry.ExpiresAt().IsZero() {
 				errorsCh <- fmt.Errorf(
 					"GetOrLoadEntry = (%+v, %v, %v)",
 					entry,
-					status,
+					found,
 					err,
 				)
 			}
@@ -731,7 +678,7 @@ func TestCacheGetOrLoadWaiterCancellation(t *testing.T) {
 	ownerDone := make(chan cacheValueResult[int], 1)
 
 	go func() {
-		value, status, err := cache.GetOrLoad(
+		value, found, err := cache.GetOrLoad(
 			context.Background(),
 			"key",
 			func(context.Context) (int, bool, error) {
@@ -741,9 +688,9 @@ func TestCacheGetOrLoadWaiterCancellation(t *testing.T) {
 			},
 		)
 		ownerDone <- cacheValueResult[int]{
-			value:  value,
-			status: status,
-			err:    err,
+			value: value,
+			found: found,
+			err:   err,
 		}
 	}()
 
@@ -777,19 +724,19 @@ func TestCacheGetOrLoadWaiterCancellation(t *testing.T) {
 	close(releaseLoader)
 
 	owner := receiveCacheResult(t, ownerDone)
-	if owner.err != nil || owner.status != LookupHit || owner.value != 42 {
+	if owner.err != nil || !owner.found || owner.value != 42 {
 		t.Fatalf(
 			"owner result = (%d, %v, %v)",
 			owner.value,
-			owner.status,
+			owner.found,
 			owner.err,
 		)
 	}
-	if value, status := cache.Get("key"); value != 42 || status != LookupHit {
+	if value, found := cache.Get("key"); value != 42 || !found {
 		t.Fatalf(
-			"cached value = (%d, %v), want (42, LookupHit)",
+			"cached value = (%d, %v), want (42, true)",
 			value,
-			status,
+			found,
 		)
 	}
 }
@@ -808,8 +755,8 @@ func TestCacheGetOrLoadPublicationBarriers(t *testing.T) {
 				cache.Set("key", 99, NoExpiration)
 			},
 			verifyCache: func(t *testing.T, cache *Cache[string, int]) {
-				if value, status := cache.Get("key"); value != 99 || status != LookupHit {
-					t.Fatalf("cache after Set = (%d, %v)", value, status)
+				if value, found := cache.Get("key"); value != 99 || !found {
+					t.Fatalf("cache after Set = (%d, %v)", value, found)
 				}
 			},
 		},
@@ -836,8 +783,8 @@ func TestCacheGetOrLoadPublicationBarriers(t *testing.T) {
 				cache.Set("key", 99, NoExpiration)
 			},
 			verifyCache: func(t *testing.T, cache *Cache[string, int]) {
-				if value, status := cache.Get("key"); value != 99 || status != LookupHit {
-					t.Fatalf("cache after Set = (%d, %v)", value, status)
+				if value, found := cache.Get("key"); value != 99 || !found {
+					t.Fatalf("cache after Set = (%d, %v)", value, found)
 				}
 			},
 		},
@@ -858,7 +805,6 @@ func TestCacheGetOrLoadPublicationBarriers(t *testing.T) {
 				"barrier",
 				WithMaxEntries(32),
 				WithSegmentCount(1),
-				WithNegativeTTL(time.Minute),
 			)
 
 			started := make(chan struct{})
@@ -866,12 +812,12 @@ func TestCacheGetOrLoadPublicationBarriers(t *testing.T) {
 			done := make(chan cacheEntryResult[int], 1)
 
 			go func() {
-				entry, status, err := cache.GetOrLoadEntry(context.Background(), "key", func(context.Context) (int, bool, error) {
+				entry, found, err := cache.GetOrLoadEntry(context.Background(), "key", func(context.Context) (int, bool, error) {
 					close(started)
 					<-release
 					return 42, test.found, nil
 				})
-				done <- cacheEntryResult[int]{entry: entry, status: status, err: err}
+				done <- cacheEntryResult[int]{entry: entry, found: found, err: err}
 			}()
 
 			receiveCacheSignal(t, started)
@@ -879,8 +825,8 @@ func TestCacheGetOrLoadPublicationBarriers(t *testing.T) {
 			close(release)
 
 			result := receiveCacheResult(t, done)
-			if result.entry != (Entry[int]{}) || result.status != LookupMiss || !errors.Is(result.err, ErrLoadSuperseded) {
-				t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v), want superseded zero result", result.entry, result.status, result.err)
+			if result.entry != (Entry[int]{}) || result.found || !errors.Is(result.err, ErrLoadSuperseded) {
+				t.Fatalf("GetOrLoadEntry() = (%+v, %v, %v), want superseded zero result", result.entry, result.found, result.err)
 			}
 			test.verifyCache(t, cache)
 
@@ -949,15 +895,15 @@ func TestCacheLoadSupersededCountCountsSharedWave(t *testing.T) {
 			ready.Done()
 			<-start
 
-			value, status, err := cache.GetOrLoad(
+			value, found, err := cache.GetOrLoad(
 				contexts[index],
 				"key",
 				loader,
 			)
 			results <- cacheValueResult[int]{
-				value:  value,
-				status: status,
-				err:    err,
+				value: value,
+				found: found,
+				err:   err,
 			}
 		}(index)
 	}
@@ -978,12 +924,12 @@ func TestCacheLoadSupersededCountCountsSharedWave(t *testing.T) {
 
 	for result := range results {
 		if result.value != 0 ||
-			result.status != LookupMiss ||
+			result.found ||
 			!errors.Is(result.err, ErrLoadSuperseded) {
 			t.Fatalf(
 				"GetOrLoad() = (%d, %v, %v), want superseded zero result",
 				result.value,
-				result.status,
+				result.found,
 				result.err,
 			)
 		}
@@ -992,8 +938,8 @@ func TestCacheLoadSupersededCountCountsSharedWave(t *testing.T) {
 	if loaderCalls.Load() != 1 {
 		t.Fatalf("loader calls = %d, want 1", loaderCalls.Load())
 	}
-	if value, status := cache.Get("key"); value != 99 || status != LookupHit {
-		t.Fatalf("cache after Set = (%d, %v), want (99, LookupHit)", value, status)
+	if value, found := cache.Get("key"); value != 99 || !found {
+		t.Fatalf("cache after Set = (%d, %v), want (99, true)", value, found)
 	}
 
 	stats := cache.Stats()
@@ -1027,7 +973,7 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 	secondDone := make(chan cacheValueResult[int], 1)
 
 	go func() {
-		value, status, err := cache.GetOrLoad(
+		value, found, err := cache.GetOrLoad(
 			context.Background(),
 			"first",
 			func(context.Context) (int, bool, error) {
@@ -1037,14 +983,14 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 			},
 		)
 		firstDone <- cacheValueResult[int]{
-			value:  value,
-			status: status,
-			err:    err,
+			value: value,
+			found: found,
+			err:   err,
 		}
 	}()
 
 	go func() {
-		value, status, err := cache.GetOrLoad(
+		value, found, err := cache.GetOrLoad(
 			context.Background(),
 			"second",
 			func(context.Context) (int, bool, error) {
@@ -1054,9 +1000,9 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 			},
 		)
 		secondDone <- cacheValueResult[int]{
-			value:  value,
-			status: status,
-			err:    err,
+			value: value,
+			found: found,
+			err:   err,
 		}
 	}()
 
@@ -1071,23 +1017,23 @@ func TestCacheInvalidateAllSupersedesMultipleActiveKeys(t *testing.T) {
 		"second": receiveCacheResult(t, secondDone),
 	} {
 		if result.value != 0 ||
-			result.status != LookupMiss ||
+			result.found ||
 			!errors.Is(result.err, ErrLoadSuperseded) {
 			t.Fatalf(
 				"%s GetOrLoad() = (%d, %v, %v), want superseded zero result",
 				name,
 				result.value,
-				result.status,
+				result.found,
 				result.err,
 			)
 		}
 	}
 
-	if _, status := cache.Get("first"); status != LookupMiss {
-		t.Fatalf("first status = %v, want LookupMiss", status)
+	if _, found := cache.Get("first"); found {
+		t.Fatalf("first found = %v, want false", found)
 	}
-	if _, status := cache.Get("second"); status != LookupMiss {
-		t.Fatalf("second status = %v, want LookupMiss", status)
+	if _, found := cache.Get("second"); found {
+		t.Fatalf("second found = %v, want false", found)
 	}
 
 	stats := cache.Stats()
@@ -1179,12 +1125,12 @@ func TestCacheMutationOfOtherKeyDoesNotSupersedeLoad(t *testing.T) {
 			done := make(chan cacheValueResult[int], 1)
 
 			go func() {
-				value, status, err := cache.GetOrLoad(context.Background(), "loading", func(context.Context) (int, bool, error) {
+				value, found, err := cache.GetOrLoad(context.Background(), "loading", func(context.Context) (int, bool, error) {
 					close(started)
 					<-release
 					return 42, true, nil
 				})
-				done <- cacheValueResult[int]{value: value, status: status, err: err}
+				done <- cacheValueResult[int]{value: value, found: found, err: err}
 			}()
 
 			receiveCacheSignal(t, started)
@@ -1192,11 +1138,11 @@ func TestCacheMutationOfOtherKeyDoesNotSupersedeLoad(t *testing.T) {
 			close(release)
 
 			result := receiveCacheResult(t, done)
-			if result.err != nil || result.status != LookupHit || result.value != 42 {
-				t.Fatalf("GetOrLoad() = (%d, %v, %v)", result.value, result.status, result.err)
+			if result.err != nil || !result.found || result.value != 42 {
+				t.Fatalf("GetOrLoad() = (%d, %v, %v)", result.value, result.found, result.err)
 			}
-			if value, status := cache.Get("loading"); value != 42 || status != LookupHit {
-				t.Fatalf("published value = (%d, %v)", value, status)
+			if value, found := cache.Get("loading"); value != 42 || !found {
+				t.Fatalf("published value = (%d, %v)", value, found)
 			}
 			if got := cache.Stats().LoadSupersededCount; got != 0 {
 				t.Fatalf("LoadSupersededCount = %d, want 0", got)
@@ -1219,14 +1165,14 @@ func TestCacheInvalidate(t *testing.T) {
 
 	cache.Invalidate("first", "second", "second", "missing")
 
-	if _, status := cache.Get("first"); status != LookupMiss {
-		t.Fatalf("first status = %v, want LookupMiss", status)
+	if _, found := cache.Get("first"); found {
+		t.Fatalf("first found = %v, want false", found)
 	}
-	if _, status := cache.Get("second"); status != LookupMiss {
-		t.Fatalf("second status = %v, want LookupMiss", status)
+	if _, found := cache.Get("second"); found {
+		t.Fatalf("second found = %v, want false", found)
 	}
-	if value, status := cache.Get("third"); value != 3 || status != LookupHit {
-		t.Fatalf("third = (%d, %v), want resident", value, status)
+	if value, found := cache.Get("third"); value != 3 || !found {
+		t.Fatalf("third = (%d, %v), want resident", value, found)
 	}
 	if got := cache.Stats().InvalidatedKeyCount; got != 2 {
 		t.Fatalf("InvalidatedKeyCount = %d, want 2", got)
@@ -1308,9 +1254,9 @@ func TestCacheInvalidateAllAndCleanupExpired(t *testing.T) {
 			},
 		}
 
-		store.setAt(0, "first", cachedValue[int]{value: 1, found: true}, 1, cache.stats.segment(0))
-		store.setAt(0, "second", cachedValue[int]{value: 2, found: true}, 2, cache.stats.segment(0))
-		store.setAt(0, "live", cachedValue[int]{value: 3, found: true}, 1<<60, cache.stats.segment(0))
+		store.setAt(0, "first", 1, 0, 1, cache.stats.segment(0))
+		store.setAt(0, "second", 2, 0, 2, cache.stats.segment(0))
+		store.setAt(0, "live", 3, 0, 1<<60, cache.stats.segment(0))
 
 		if got := cache.CleanupExpired(); got != 2 {
 			t.Fatalf("CleanupExpired() = %d, want 2", got)
@@ -1343,8 +1289,8 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 		WithSegmentCount(4),
 	)
 	integers.Set(42, "value", NoExpiration)
-	if value, status := integers.Get(42); value != "value" || status != LookupHit {
-		t.Fatalf("int64 key Get() = (%q, %v)", value, status)
+	if value, found := integers.Get(42); value != "value" || !found {
+		t.Fatalf("int64 key Get() = (%q, %v)", value, found)
 	}
 
 	type compositeKey struct {
@@ -1363,7 +1309,7 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 	equal := compositeKey{Tenant: "acme", ID: 7}
 
 	var calls atomic.Int64
-	value, status, err := composite.GetOrLoad(
+	value, found, err := composite.GetOrLoad(
 		context.Background(),
 		stored,
 		func(context.Context) (int, bool, error) {
@@ -1371,23 +1317,23 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 			return 99, true, nil
 		},
 	)
-	if err != nil || status != LookupHit || value != 99 {
+	if err != nil || !found || value != 99 {
 		t.Fatalf(
 			"composite key GetOrLoad() = (%d, %v, %v)",
 			value,
-			status,
+			found,
 			err,
 		)
 	}
 
-	if value, status := composite.Get(equal); value != 99 || status != LookupHit {
-		t.Fatalf("Get(equal key) = (%d, %v)", value, status)
+	if value, found := composite.Get(equal); value != 99 || !found {
+		t.Fatalf("Get(equal key) = (%d, %v)", value, found)
 	}
 	if !composite.Exists(equal) {
 		t.Fatal("Exists(equal key) = false")
 	}
 
-	value, status, err = composite.GetOrLoad(
+	value, found, err = composite.GetOrLoad(
 		context.Background(),
 		equal,
 		func(context.Context) (int, bool, error) {
@@ -1395,11 +1341,11 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 			return 100, true, nil
 		},
 	)
-	if err != nil || status != LookupHit || value != 99 {
+	if err != nil || !found || value != 99 {
 		t.Fatalf(
 			"GetOrLoad(equal key) = (%d, %v, %v)",
 			value,
-			status,
+			found,
 			err,
 		)
 	}
@@ -1408,10 +1354,10 @@ func TestCacheSupportsComparableKeyTypes(t *testing.T) {
 	}
 
 	composite.Invalidate(equal)
-	if _, status := composite.Get(stored); status != LookupMiss {
+	if _, found := composite.Get(stored); found {
 		t.Fatalf(
-			"Get(stored key) after Invalidate(equal) = %v, want LookupMiss",
-			status,
+			"Get(stored key) after Invalidate(equal) = %v, want false",
+			found,
 		)
 	}
 }
@@ -1497,15 +1443,15 @@ func (ctx *observedContext) Done() <-chan struct{} {
 }
 
 type cacheValueResult[V any] struct {
-	value  V
-	status LookupStatus
-	err    error
+	value V
+	found bool
+	err   error
 }
 
 type cacheEntryResult[V any] struct {
-	entry  Entry[V]
-	status LookupStatus
-	err    error
+	entry Entry[V]
+	found bool
+	err   error
 }
 
 func mustNewCache[K comparable, V any](
@@ -1642,8 +1588,8 @@ func assertCacheLRUEndsForTest[V any](
 func expectCacheMiss(t *testing.T, cache *Cache[string, int]) {
 	t.Helper()
 
-	if value, status := cache.Get("key"); value != 0 || status != LookupMiss {
-		t.Fatalf("cache state = (%d, %v), want miss", value, status)
+	if value, found := cache.Get("key"); value != 0 || found {
+		t.Fatalf("cache state = (%d, %v), want miss", value, found)
 	}
 }
 

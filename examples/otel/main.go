@@ -65,7 +65,6 @@ func run(ctx context.Context) error {
 		"users",
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(time.Minute),
-		pacecache.WithNegativeTTL(10*time.Second),
 		pacecache.WithMetrics(metrics),
 	)
 	if err != nil {
@@ -73,7 +72,7 @@ func run(ctx context.Context) error {
 	}
 	defer users.Close()
 
-	loadUser := func(id int64) (user, pacecache.LookupStatus, error) {
+	loadUser := func(id int64) (user, bool, error) {
 		return users.GetOrLoad(
 			ctx,
 			id,
@@ -85,42 +84,31 @@ func run(ctx context.Context) error {
 
 	// 3. Generate representative cache activity.
 	lookups := []struct {
-		id     int64
-		status pacecache.LookupStatus
+		id    int64
+		found bool
 	}{
-		{id: 42, status: pacecache.LookupHit},
-		{id: 42, status: pacecache.LookupHit},
-		{id: 404, status: pacecache.LookupNegativeHit},
-		{id: 404, status: pacecache.LookupNegativeHit},
+		{id: 42, found: true},
+		{id: 42, found: true},
+		{id: 404, found: false},
+		{id: 404, found: false},
 	}
 
 	for _, lookup := range lookups {
-		_, status, err := loadUser(lookup.id)
+		_, found, err := loadUser(lookup.id)
 		if err != nil {
 			return fmt.Errorf("load user %d: %w", lookup.id, err)
 		}
-		if status != lookup.status {
-			return fmt.Errorf(
-				"load user %d: status=%d, want=%d",
-				lookup.id,
-				status,
-				lookup.status,
-			)
+		if found != lookup.found {
+			return fmt.Errorf("load user %d: found=%t", lookup.id, found)
 		}
 	}
 
 	users.Invalidate(42)
 
-	_, status, err := loadUser(42)
-	if err != nil {
+	if _, found, err := loadUser(42); err != nil {
 		return fmt.Errorf("reload invalidated user: %w", err)
-	}
-	if status != pacecache.LookupHit {
-		return fmt.Errorf(
-			"reload invalidated user: status=%d, want=%d",
-			status,
-			pacecache.LookupHit,
-		)
+	} else if !found {
+		return fmt.Errorf("reloaded user 42 was not found")
 	}
 
 	// 4. Force one collection because this short-lived example exits

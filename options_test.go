@@ -27,9 +27,6 @@ func TestDefaultCacheSettings(t *testing.T) {
 	if settings.jitter != 0 {
 		t.Fatalf("jitter = %v, want 0", settings.jitter)
 	}
-	if settings.negativeTTL != 0 {
-		t.Fatalf("negativeTTL = %v, want 0", settings.negativeTTL)
-	}
 	if settings.slidingExpiration {
 		t.Fatal("slidingExpiration = true, want false")
 	}
@@ -56,7 +53,6 @@ func TestNewCacheSettingsAppliesOptions(t *testing.T) {
 		WithSegmentCount(16),
 		WithTTL(2*time.Minute),
 		WithJitter(5*time.Second),
-		WithNegativeTTL(30*time.Second),
 		WithSlidingExpiration(),
 		WithCleanupInterval(time.Second),
 		WithCleanupBatchSize(64),
@@ -81,9 +77,6 @@ func TestNewCacheSettingsAppliesOptions(t *testing.T) {
 	}
 	if settings.jitter != 5*time.Second {
 		t.Fatalf("jitter = %v, want %v", settings.jitter, 5*time.Second)
-	}
-	if settings.negativeTTL != 30*time.Second {
-		t.Fatalf("negativeTTL = %v, want %v", settings.negativeTTL, 30*time.Second)
 	}
 	if !settings.slidingExpiration {
 		t.Fatal("slidingExpiration = false, want true")
@@ -161,12 +154,6 @@ func TestNewCacheSettingsRejectsInvalidOptions(t *testing.T) {
 			want:    "apply option 0: jitter must not be negative",
 		},
 		{
-			name:    "negative ttl",
-			cache:   "cache",
-			options: []Option{WithNegativeTTL(-1)},
-			want:    "apply option 0: negative ttl must not be negative",
-		},
-		{
 			name:    "cleanup interval zero",
 			cache:   "cache",
 			options: []Option{WithCleanupInterval(0)},
@@ -224,7 +211,6 @@ func TestCacheSettingsAcceptBoundaryValues(t *testing.T) {
 		WithSegmentCount(defaultStorageSegmentCount),
 		WithTTL(NoExpiration),
 		WithJitter(maxDuration),
-		WithNegativeTTL(0),
 		WithCleanupBatchSize(1),
 		WithCleanupEntryBudget(1),
 		WithMetrics(nil),

@@ -27,11 +27,8 @@ type Stats struct {
 
 	// Lookup lifecycle.
 
-	// HitCount is the cumulative number of positive cache hits.
+	// HitCount is the cumulative number of cache hits.
 	HitCount int64
-
-	// NegativeHitCount is the cumulative number of cached negative hits.
-	NegativeHitCount int64
 
 	// MissCount is the cumulative number of cache misses. An expired entry
 	// observed by a caller is counted as a miss.
@@ -60,7 +57,7 @@ type Stats struct {
 	LoadSupersededCount int64
 
 	// LoadDuration is the cumulative duration of actual loader invocations,
-	// including successful, negative, and failed loads.
+	// including found, not-found, and failed loads.
 	LoadDuration time.Duration
 
 	// SharedCount is the cumulative number of callers that received a
@@ -126,11 +123,10 @@ type statsCollector struct {
 
 type segmentStats struct {
 	// Protected by the corresponding storage segment mutex.
-	hitCount         int64
-	negativeHitCount int64
-	missCount        int64
-	evictionCount    int64
-	expirationCount  int64
+	hitCount        int64
+	missCount       int64
+	evictionCount   int64
+	expirationCount int64
 
 	// Updated outside a suitable existing lock.
 	loadFoundCount      atomic.Int64
@@ -171,7 +167,6 @@ func (cache *Cache[K, V]) Stats() Stats {
 
 		snapshot.EntryCount += int64(len(segment.entries))
 		snapshot.HitCount += shard.hitCount
-		snapshot.NegativeHitCount += shard.negativeHitCount
 		snapshot.MissCount += shard.missCount
 		snapshot.EvictionCount += shard.evictionCount
 		snapshot.ExpirationCount += shard.expirationCount

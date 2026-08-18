@@ -38,9 +38,8 @@ const (
 )
 
 const (
-	lookupResultHit         = "hit"
-	lookupResultNegativeHit = "negative_hit"
-	lookupResultMiss        = "miss"
+	lookupResultHit  = "hit"
+	lookupResultMiss = "miss"
 
 	loadResultFound    = "found"
 	loadResultNotFound = "not_found"
@@ -71,9 +70,8 @@ type cacheMetricInstruments struct {
 type cacheMetricAttributes struct {
 	base metric.ObserveOption
 
-	hit         metric.ObserveOption
-	negativeHit metric.ObserveOption
-	miss        metric.ObserveOption
+	hit  metric.ObserveOption
+	miss metric.ObserveOption
 
 	loadFound    metric.ObserveOption
 	loadNotFound metric.ObserveOption
@@ -166,12 +164,6 @@ func (instruments cacheMetricInstruments) observe(
 		instruments.lookupCount,
 		stats.HitCount,
 		attributes.hit,
-	)
-
-	observer.ObserveInt64(
-		instruments.lookupCount,
-		stats.NegativeHitCount,
-		attributes.negativeHit,
 	)
 
 	observer.ObserveInt64(
@@ -496,13 +488,6 @@ func newCacheMetricAttributes(name string) cacheMetricAttributes {
 			attribute.String(
 				lookupResultAttribute,
 				lookupResultHit,
-			),
-		),
-
-		negativeHit: option(
-			attribute.String(
-				lookupResultAttribute,
-				lookupResultNegativeHit,
 			),
 		),
 

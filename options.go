@@ -24,7 +24,6 @@ type cacheSettings struct {
 
 	ttl               time.Duration
 	jitter            time.Duration
-	negativeTTL       time.Duration
 	slidingExpiration bool
 
 	cleanupInterval    time.Duration
@@ -98,10 +97,10 @@ func WithSegmentCount(count int) Option {
 	}
 }
 
-// WithTTL configures the default lifetime of positive cache entries.
+// WithTTL configures the default lifetime of cache entries.
 //
 // A positive TTL enables time-based expiration. NoExpiration disables
-// time-based expiration for positive entries using the default expiration.
+// time-based expiration for entries using the default expiration.
 func WithTTL(ttl time.Duration) Option {
 	return func(settings *cacheSettings) error {
 		if ttl <= 0 && ttl != NoExpiration {
@@ -114,9 +113,9 @@ func WithTTL(ttl time.Duration) Option {
 	}
 }
 
-// WithJitter configures random positive TTL spread.
+// WithJitter configures random TTL spread.
 //
-// Jitter is selected when a positive entry is stored to reduce synchronized
+// Jitter is selected when an expiring entry is stored to reduce synchronized
 // expiration. With sliding expiration, the resulting effective TTL is reused
 // on every refresh instead of selecting another jitter value. Zero disables
 // jitter.
@@ -132,29 +131,14 @@ func WithJitter(jitter time.Duration) Option {
 	}
 }
 
-// WithNegativeTTL configures the lifetime of cached not-found results.
-//
-// Zero disables negative caching. Negative TTL is not jittered.
-func WithNegativeTTL(ttl time.Duration) Option {
-	return func(settings *cacheSettings) error {
-		if ttl < 0 {
-			return errors.New("negative ttl must not be negative")
-		}
-
-		settings.negativeTTL = ttl
-
-		return nil
-	}
-}
-
-// WithSlidingExpiration refreshes the expiration deadline of live positive
+// WithSlidingExpiration refreshes the expiration deadline of live expiring
 // entries whenever they are successfully read.
 //
 // Each entry is refreshed using the effective TTL selected when it was stored.
 // Entries using DefaultExpiration derive that TTL from the cache configuration,
 // while entries with an explicit positive TTL retain their own TTL. Configured
 // jitter is selected once when the entry is stored and reused by subsequent
-// refreshes. Negative entries and entries using NoExpiration are not refreshed.
+// refreshes. Entries using NoExpiration are not refreshed.
 func WithSlidingExpiration() Option {
 	return func(settings *cacheSettings) error {
 		settings.slidingExpiration = true

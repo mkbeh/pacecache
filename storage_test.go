@@ -69,7 +69,7 @@ func TestNewStorage(t *testing.T) {
 			t.Fatal("expected trailing zero-capacity segments")
 		}
 
-		store.setAt(3, "key", cachedValue[int]{value: 1, found: true}, 0, stats.segment(3))
+		store.setAt(3, "key", 1, 0, 0, stats.segment(3))
 		if len(store.segments[3].entries) != 0 {
 			t.Fatal("zero-capacity segment stored an entry")
 		}
@@ -143,14 +143,14 @@ func TestStorageSetUpdateLRUAndEviction(t *testing.T) {
 	stats := newStatsCollector(1)
 	segment := &store.segments[0]
 
-	store.setAt(0, "first", cachedValue[int]{value: 1, found: true}, 10, stats.segment(0))
-	store.setAt(0, "second", cachedValue[int]{value: 2, found: true}, 20, stats.segment(0))
+	store.setAt(0, "first", 1, 0, 10, stats.segment(0))
+	store.setAt(0, "second", 2, 0, 20, stats.segment(0))
 
 	if segment.head.key != "second" || segment.tail.key != "first" {
 		t.Fatalf("LRU order = head %q tail %q", segment.head.key, segment.tail.key)
 	}
 
-	if value, ok := store.getAt(0, "first", 0, stats.segment(0)); !ok || value.value != 1 {
+	if value, ok := store.getAt(0, "first", 0, stats.segment(0)); !ok || value != 1 {
 		t.Fatalf("getAt(first) = (%+v, %t)", value, ok)
 	}
 	if segment.head.key != "first" || segment.tail.key != "second" {
@@ -158,7 +158,7 @@ func TestStorageSetUpdateLRUAndEviction(t *testing.T) {
 	}
 
 	victim := segment.entries["second"]
-	store.setAt(0, "third", cachedValue[int]{value: 3, found: true}, 30, stats.segment(0))
+	store.setAt(0, "third", 3, 0, 30, stats.segment(0))
 
 	if _, ok := segment.entries["second"]; ok {
 		t.Fatal("LRU victim remains resident")
@@ -173,7 +173,7 @@ func TestStorageSetUpdateLRUAndEviction(t *testing.T) {
 		t.Fatalf("LRU order after eviction = head %q tail %q", segment.head.key, segment.tail.key)
 	}
 
-	store.setAt(0, "first", cachedValue[int]{value: 10, found: true}, 40, stats.segment(0))
+	store.setAt(0, "first", 10, 0, 40, stats.segment(0))
 	if got := segment.entries["first"].value; got != 10 {
 		t.Fatalf("updated value = %d, want 10", got)
 	}
@@ -189,18 +189,14 @@ func TestStorageSetUpdateLRUAndEviction(t *testing.T) {
 }
 
 func TestStorageSetNormalizesSlidingTTL(t *testing.T) {
-	store := newStorageWithExpirationResolution[string, int](3, 1, time.Nanosecond)
+	store := newStorageWithExpirationResolution[string, int](2, 1, time.Nanosecond)
 	segment := &store.segments[0]
 
-	segment.set("positive", cachedValue[int]{value: 1, found: true, refreshTTL: 10}, 100, nil)
-	segment.set("negative", cachedValue[int]{found: false, refreshTTL: 10}, 100, nil)
-	segment.set("forever", cachedValue[int]{value: 2, found: true, refreshTTL: 10}, 0, nil)
+	segment.set("expiring", 1, 10, 100, nil)
+	segment.set("forever", 2, 10, 0, nil)
 
-	if got := segment.entries["positive"].refreshTTL; got != 10 {
-		t.Fatalf("positive refreshTTL = %v, want 10", got)
-	}
-	if got := segment.entries["negative"].refreshTTL; got != 0 {
-		t.Fatalf("negative refreshTTL = %v, want 0", got)
+	if got := segment.entries["expiring"].refreshTTL; got != 10 {
+		t.Fatalf("expiring refreshTTL = %v, want 10", got)
 	}
 	if got := segment.entries["forever"].refreshTTL; got != 0 {
 		t.Fatalf("NoExpiration refreshTTL = %v, want 0", got)
@@ -212,35 +208,35 @@ func TestStorageLookupAndInternalGetStatistics(t *testing.T) {
 	stats := newStatsCollector(1)
 	shard := stats.segment(0)
 
-	store.setAt(0, "positive", cachedValue[int]{value: 1, found: true}, 100, shard)
-	store.setAt(0, "negative", cachedValue[int]{found: false}, 100, shard)
+	store.setAt(0, "value", 1, 0, 100, shard)
+	store.setAt(0, "entry", 2, 0, 100, shard)
 
-	if _, ok := store.lookupAt(0, "positive", 10, shard); !ok {
-		t.Fatal("positive lookup missed")
+	if value, ok := store.lookupAt(0, "value", 10, shard); !ok || value != 1 {
+		t.Fatalf("value lookup = (%d, %t)", value, ok)
 	}
-	if _, ok := store.lookupEntryAt(0, "negative", 10, shard); !ok {
-		t.Fatal("negative lookup missed")
+	if entry, ok := store.lookupEntryAt(0, "entry", 10, shard); !ok || entry.value != 2 {
+		t.Fatalf("entry lookup = (%+v, %t)", entry, ok)
 	}
 	if _, ok := store.lookupAt(0, "missing", 10, shard); ok {
 		t.Fatal("missing lookup hit")
 	}
 
-	if _, ok := store.getAt(0, "positive", 10, shard); !ok {
+	if _, ok := store.getAt(0, "value", 10, shard); !ok {
 		t.Fatal("internal get missed")
 	}
-	if _, ok := store.getEntryAt(0, "negative", 10, shard); !ok {
+	if _, ok := store.getEntryAt(0, "entry", 10, shard); !ok {
 		t.Fatal("internal entry get missed")
 	}
 
-	if shard.hitCount != 1 || shard.negativeHitCount != 1 || shard.missCount != 1 {
-		t.Fatalf("lookup stats = (hit=%d negative=%d miss=%d), want (1,1,1)", shard.hitCount, shard.negativeHitCount, shard.missCount)
+	if shard.hitCount != 2 || shard.missCount != 1 {
+		t.Fatalf("lookup stats = (hit=%d miss=%d), want (2,1)", shard.hitCount, shard.missCount)
 	}
 
-	if _, ok := store.lookupAt(0, "positive", 100, shard); ok {
-		t.Fatal("expired positive entry was returned")
+	if _, ok := store.lookupAt(0, "value", 100, shard); ok {
+		t.Fatal("expired value was returned")
 	}
-	if _, ok := store.getEntryAt(0, "negative", 100, shard); ok {
-		t.Fatal("expired negative entry was returned")
+	if _, ok := store.getEntryAt(0, "entry", 100, shard); ok {
+		t.Fatal("expired entry was returned")
 	}
 
 	if shard.expirationCount != 2 {
@@ -252,23 +248,19 @@ func TestStorageLookupAndInternalGetStatistics(t *testing.T) {
 }
 
 func TestStorageExists(t *testing.T) {
-	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	store := newStorageWithExpirationResolution[string, int](3, 1, time.Nanosecond)
 	stats := newStatsCollector(1)
 	segment := &store.segments[0]
 	shard := stats.segment(0)
 
-	segment.set("positive", cachedValue[int]{value: 1, found: true}, 100, shard)
-	segment.set("negative", cachedValue[int]{found: false}, 100, shard)
-	segment.set("expired", cachedValue[int]{value: 2, found: true}, 5, shard)
+	segment.set("live", 1, 0, 100, shard)
+	segment.set("expired", 2, 0, 5, shard)
 
 	head := segment.head
 	tail := segment.tail
 
-	if !segment.exists("positive", 10, shard) {
-		t.Fatal("Exists(positive) = false")
-	}
-	if segment.exists("negative", 10, shard) {
-		t.Fatal("Exists(negative) = true")
+	if !segment.exists("live", 10, shard) {
+		t.Fatal("Exists(live) = false")
 	}
 	if segment.exists("missing", 10, shard) {
 		t.Fatal("Exists(missing) = true")
@@ -277,7 +269,7 @@ func TestStorageExists(t *testing.T) {
 	if segment.head != head || segment.tail != tail {
 		t.Fatal("Exists changed LRU order for live entries")
 	}
-	if shard.hitCount != 0 || shard.negativeHitCount != 0 || shard.missCount != 0 {
+	if shard.hitCount != 0 || shard.missCount != 0 {
 		t.Fatal("Exists changed lookup statistics")
 	}
 
@@ -290,36 +282,32 @@ func TestStorageExists(t *testing.T) {
 }
 
 func TestStorageRefreshTTL(t *testing.T) {
-	store := newStorageWithExpirationResolution[string, int](5, 1, time.Nanosecond)
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
 	stats := newStatsCollector(1)
 	segment := &store.segments[0]
 	shard := stats.segment(0)
 
-	segment.set("positive", cachedValue[int]{value: 1, found: true, refreshTTL: 100}, 1000, shard)
-	segment.set("negative", cachedValue[int]{found: false, refreshTTL: 100}, 1000, shard)
-	segment.set("forever", cachedValue[int]{value: 2, found: true, refreshTTL: 100}, 0, shard)
-	segment.set("expired", cachedValue[int]{value: 3, found: true, refreshTTL: 100}, 50, shard)
+	segment.set("expiring", 1, 100, 1000, shard)
+	segment.set("forever", 2, 100, 0, shard)
+	segment.set("expired", 3, 100, 50, shard)
 
 	head := segment.head
 	tail := segment.tail
 
-	if !segment.refreshTTL("positive", 100, shard) {
-		t.Fatal("RefreshTTL(positive) = false")
+	if !segment.refreshTTL("expiring", 100, shard) {
+		t.Fatal("RefreshTTL(expiring) = false")
 	}
-	if got := segment.entries["positive"].deadline; got != 1000 {
+	if got := segment.entries["expiring"].deadline; got != 1000 {
 		t.Fatalf("stale refresh shortened deadline to %d", got)
 	}
 
-	if !segment.refreshTTL("positive", 950, shard) {
-		t.Fatal("RefreshTTL(positive) = false")
+	if !segment.refreshTTL("expiring", 950, shard) {
+		t.Fatal("RefreshTTL(expiring) = false")
 	}
-	if got := segment.entries["positive"].deadline; got != 1050 {
+	if got := segment.entries["expiring"].deadline; got != 1050 {
 		t.Fatalf("extended deadline = %d, want 1050", got)
 	}
 
-	if segment.refreshTTL("negative", 100, shard) {
-		t.Fatal("RefreshTTL(negative) = true")
-	}
 	if !segment.refreshTTL("forever", 100, shard) {
 		t.Fatal("RefreshTTL(NoExpiration) = false")
 	}
@@ -333,7 +321,7 @@ func TestStorageRefreshTTL(t *testing.T) {
 	if segment.head != head || segment.tail != tail {
 		t.Fatal("RefreshTTL changed LRU order for live entries")
 	}
-	if shard.hitCount != 0 || shard.negativeHitCount != 0 || shard.missCount != 0 {
+	if shard.hitCount != 0 || shard.missCount != 0 {
 		t.Fatal("RefreshTTL changed lookup statistics")
 	}
 
@@ -346,34 +334,26 @@ func TestStorageRefreshTTL(t *testing.T) {
 }
 
 func TestStorageSlidingExpiration(t *testing.T) {
-	store := newStorageWithExpirationResolution[string, int](3, 1, time.Nanosecond)
+	store := newStorageWithExpirationResolution[string, int](2, 1, time.Nanosecond)
 	store.enableSlidingExpiration()
 	segment := &store.segments[0]
 
-	segment.set("positive", cachedValue[int]{value: 1, found: true, refreshTTL: 100}, 1000, nil)
-	segment.set("negative", cachedValue[int]{found: false, refreshTTL: 100}, 1000, nil)
-	segment.set("forever", cachedValue[int]{value: 2, found: true, refreshTTL: 100}, 0, nil)
+	segment.set("expiring", 1, 100, 1000, nil)
+	segment.set("forever", 2, 100, 0, nil)
 
-	entry, ok := segment.getEntry("positive", 950, nil)
+	entry, ok := segment.getEntry("expiring", 950, nil)
 	if !ok {
-		t.Fatal("sliding positive entry missed")
+		t.Fatal("sliding entry missed")
 	}
 	if entry.deadline != 1050 {
 		t.Fatalf("refreshed deadline = %d, want 1050", entry.deadline)
 	}
 
-	if _, ok := segment.get("positive", 100, nil); !ok {
-		t.Fatal("positive entry missed on stale timestamp")
+	if _, ok := segment.get("expiring", 100, nil); !ok {
+		t.Fatal("entry missed on stale timestamp")
 	}
-	if got := segment.entries["positive"].deadline; got != 1050 {
+	if got := segment.entries["expiring"].deadline; got != 1050 {
 		t.Fatalf("stale read shortened deadline to %d", got)
-	}
-
-	if _, ok := segment.getEntry("negative", 950, nil); !ok {
-		t.Fatal("negative entry missed")
-	}
-	if got := segment.entries["negative"].deadline; got != 1000 {
-		t.Fatalf("negative deadline = %d, want 1000", got)
 	}
 
 	if _, ok := segment.getEntry("forever", 950, nil); !ok {
@@ -389,7 +369,7 @@ func TestStorageDeleteAndDeleteAll(t *testing.T) {
 	segment := &store.segments[0]
 
 	for index, key := range []string{"first", "second", "third"} {
-		segment.set(key, cachedValue[int]{value: index, found: true}, int64(index+1), nil)
+		segment.set(key, index, 0, int64(index+1), nil)
 	}
 
 	if segment.delete("missing") {
@@ -425,9 +405,9 @@ func TestStorageCleanupExpired(t *testing.T) {
 		stats := newStatsCollector(1)
 		segment := &store.segments[0]
 
-		segment.set("first", cachedValue[int]{value: 1, found: true}, 1, stats.segment(0))
-		segment.set("second", cachedValue[int]{value: 2, found: true}, 2, stats.segment(0))
-		segment.set("live", cachedValue[int]{value: 3, found: true}, 100, stats.segment(0))
+		segment.set("first", 1, 0, 1, stats.segment(0))
+		segment.set("second", 2, 0, 2, stats.segment(0))
+		segment.set("live", 3, 0, 100, stats.segment(0))
 
 		removed, pending := segment.cleanupExpired(10, 1, stats.segment(0))
 		if removed != 1 || !pending {
@@ -450,10 +430,10 @@ func TestStorageCleanupExpired(t *testing.T) {
 		store := newStorageWithExpirationResolution[string, int](6, 2, time.Nanosecond)
 		stats := newStatsCollector(2)
 
-		store.setAt(0, "first", cachedValue[int]{value: 1, found: true}, 1, stats.segment(0))
-		store.setAt(0, "second", cachedValue[int]{value: 2, found: true}, 2, stats.segment(0))
-		store.setAt(1, "third", cachedValue[int]{value: 3, found: true}, 3, stats.segment(1))
-		store.setAt(1, "live", cachedValue[int]{value: 4, found: true}, 100, stats.segment(1))
+		store.setAt(0, "first", 1, 0, 1, stats.segment(0))
+		store.setAt(0, "second", 2, 0, 2, stats.segment(0))
+		store.setAt(1, "third", 3, 0, 3, stats.segment(1))
+		store.setAt(1, "live", 4, 0, 100, stats.segment(1))
 
 		removed := store.cleanupExpired(
 			10,
@@ -486,7 +466,7 @@ func TestStorageCleanupExpired(t *testing.T) {
 func TestStorageCleanupExpiredPanicsOnIndexMismatch(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](1, 1, time.Nanosecond)
 	segment := &store.segments[0]
-	segment.set("key", cachedValue[int]{value: 1, found: true}, 1, nil)
+	segment.set("key", 1, 0, 1, nil)
 
 	segment.entries["key"] = &entry[string, int]{key: "key"}
 

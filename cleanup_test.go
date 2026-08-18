@@ -80,7 +80,7 @@ func TestCleanupWorkerQuantum(t *testing.T) {
 		store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
 		stats := newStatsCollector(1)
 		for index := 1; index <= 3; index++ {
-			store.setAt(0, string(rune('a'+index)), cachedValue[int]{value: index, found: true}, int64(index), stats.segment(0))
+			store.setAt(0, string(rune('a'+index)), index, 0, int64(index), stats.segment(0))
 		}
 
 		worker := newCleanupWorker(
@@ -114,8 +114,8 @@ func TestCleanupWorkerQuantum(t *testing.T) {
 	t.Run("rotates and resumes segments", func(t *testing.T) {
 		store := newStorageWithExpirationResolution[string, int](4, 2, time.Nanosecond)
 		stats := newStatsCollector(2)
-		store.setAt(0, "first", cachedValue[int]{value: 1, found: true}, 1, stats.segment(0))
-		store.setAt(1, "second", cachedValue[int]{value: 2, found: true}, 1, stats.segment(1))
+		store.setAt(0, "first", 1, 0, 1, stats.segment(0))
+		store.setAt(1, "second", 2, 0, 1, stats.segment(1))
 
 		worker := newCleanupWorker(
 			store,
@@ -149,7 +149,7 @@ func TestCleanupWorkerQuantum(t *testing.T) {
 	t.Run("stopped worker exits", func(t *testing.T) {
 		store := newStorageWithExpirationResolution[string, int](1, 1, time.Nanosecond)
 		stats := newStatsCollector(1)
-		store.setAt(0, "key", cachedValue[int]{value: 1, found: true}, 1, stats.segment(0))
+		store.setAt(0, "key", 1, 0, 1, stats.segment(0))
 
 		worker := newCleanupWorker(
 			store,
@@ -171,8 +171,8 @@ func TestCleanupWorkerQuantum(t *testing.T) {
 func TestCleanupWorkerRunRemovesExpiredEntries(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](2, 1, time.Nanosecond)
 	stats := newStatsCollector(1)
-	store.setAt(0, "expired", cachedValue[int]{value: 1, found: true}, 1, stats.segment(0))
-	store.setAt(0, "live", cachedValue[int]{value: 2, found: true}, 1<<60, stats.segment(0))
+	store.setAt(0, "expired", 1, 0, 1, stats.segment(0))
+	store.setAt(0, "live", 2, 0, 1<<60, stats.segment(0))
 
 	worker := newCleanupWorker(
 		store,
@@ -247,8 +247,8 @@ func TestCacheCloseStopsCleanupWorker(t *testing.T) {
 	}
 
 	cache.Set("key", 1, NoExpiration)
-	if value, status := cache.Get("key"); value != 1 || status != LookupHit {
-		t.Fatalf("cache after Close = (%d, %v), want (1, LookupHit)", value, status)
+	if value, found := cache.Get("key"); value != 1 || !found {
+		t.Fatalf("cache after Close = (%d, %t), want (1, true)", value, found)
 	}
 }
 

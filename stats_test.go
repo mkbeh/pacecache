@@ -28,12 +28,11 @@ func TestStatsAggregatesSegments(t *testing.T) {
 		stats:  stats,
 	}
 
-	store.segments[0].set("first", cachedValue[int]{value: 1, found: true}, 0, stats.segment(0))
-	store.segments[1].set("second", cachedValue[int]{value: 2, found: true}, 0, stats.segment(1))
-	store.segments[1].set("third", cachedValue[int]{found: false}, 0, stats.segment(1))
+	store.segments[0].set("first", 1, 0, 0, stats.segment(0))
+	store.segments[1].set("second", 2, 0, 0, stats.segment(1))
+	store.segments[1].set("third", 3, 0, 0, stats.segment(1))
 
 	stats.segments[0].hitCount = 2
-	stats.segments[0].negativeHitCount = 3
 	stats.segments[0].missCount = 4
 	stats.segments[0].evictionCount = 5
 	stats.segments[0].expirationCount = 6
@@ -46,7 +45,6 @@ func TestStatsAggregatesSegments(t *testing.T) {
 	stats.segments[0].invalidatedKeyCount.Store(13)
 
 	stats.segments[1].hitCount = 20
-	stats.segments[1].negativeHitCount = 30
 	stats.segments[1].missCount = 40
 	stats.segments[1].evictionCount = 50
 	stats.segments[1].expirationCount = 60
@@ -69,7 +67,6 @@ func TestStatsAggregatesSegments(t *testing.T) {
 		MaxEntries:                8,
 		SegmentCount:              2,
 		HitCount:                  22,
-		NegativeHitCount:          33,
 		MissCount:                 44,
 		LoadFoundCount:            77,
 		LoadNotFoundCount:         88,

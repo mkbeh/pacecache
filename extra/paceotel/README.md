@@ -42,4 +42,4 @@ defer cache.Close()
 ```
 <!-- @formatter:on -->
 
-See [example](../../examples/otel) for a runnable example using the OpenTelemetry stdout metric exporter.
+See the OpenTelemetry stdout metric exporter [example](../../examples/otel) for details.
