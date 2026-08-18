@@ -155,13 +155,6 @@ func (storage *storage[K, V]) now() int64 {
 	return int64(time.Since(storage.origin))
 }
 
-// elapsedAt converts a time carrying the same monotonic clock domain into
-// storage-relative nanoseconds. It is primarily useful when a caller already
-// captured a time.Time for another purpose, such as loader duration metrics.
-func (storage *storage[K, V]) elapsedAt(now time.Time) int64 {
-	return int64(now.Sub(storage.origin))
-}
-
 // deadlineAt converts an absolute time.Time to this storage's monotonic
 // deadline representation. A non-zero time at or before the storage origin is
 // represented by a negative deadline so it remains immediately expired rather

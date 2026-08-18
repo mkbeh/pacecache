@@ -411,13 +411,13 @@ func (cache *Cache[K, V]) getOrLoad(
 				return loadResultFromCached(cached), nil
 			}
 
-			startedAt := time.Now()
+			startedAt := cache.store.now()
 
 			value, found, err := loader(ctx)
 
-			finishedAt := time.Now()
+			finishedAt := cache.store.now()
 
-			cache.stats.recordLoad(index, found, err, finishedAt.Sub(startedAt))
+			cache.stats.recordLoad(index, found, err, time.Duration(finishedAt-startedAt))
 
 			if err != nil {
 				return loadResult[V]{}, err
@@ -429,7 +429,7 @@ func (cache *Cache[K, V]) getOrLoad(
 				value = zeroValue
 			}
 
-			now := cache.store.elapsedAt(finishedAt)
+			now := finishedAt
 
 			var (
 				deadline   int64
