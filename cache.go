@@ -239,6 +239,48 @@ func (cache *Cache[K, V]) Get(key K) (V, LookupStatus) {
 	return cached.value, LookupHit
 }
 
+// GetEntry returns an immutable snapshot of the cached entry for key.
+//
+// GetEntry has the same lookup semantics as Get: it updates LRU recency,
+// contributes to lookup statistics, removes an observed expired entry, and
+// refreshes a live positive entry when sliding expiration is enabled.
+//
+// LookupHit returns a positive entry. LookupNegativeHit returns an entry whose
+// Value is the zero value of V and whose ExpiresAt reports the negative entry's
+// expiration. LookupMiss returns the zero Entry.
+//
+// For an entry stored with NoExpiration, Entry.ExpiresAt returns the zero time.
+// When sliding expiration refreshes an entry, ExpiresAt reflects the refreshed
+// deadline.
+func (cache *Cache[K, V]) GetEntry(key K) (Entry[V], LookupStatus) {
+	var zero Entry[V]
+
+	if !cache.initialized() {
+		return zero, LookupMiss
+	}
+
+	index := cache.store.segmentIndex(key)
+	stats := cache.stats.segment(index)
+
+	cached, ok := cache.store.lookupEntryAt(index, key, cache.store.now(), stats)
+	if !ok {
+		return zero, LookupMiss
+	}
+
+	expiresAt := cache.store.expiresAt(cached.deadline)
+
+	if !cached.found {
+		return Entry[V]{
+			expiresAt: expiresAt,
+		}, LookupNegativeHit
+	}
+
+	return Entry[V]{
+		value:     cached.value,
+		expiresAt: expiresAt,
+	}, LookupHit
+}
+
 // GetOrLoad returns the cached result for key or obtains it from loader.
 //
 // A loader result with found=true is cached using the positive TTL. A result
@@ -250,56 +292,123 @@ func (cache *Cache[K, V]) Get(key K) (V, LookupStatus) {
 // context of the caller that starts the shared load. Other callers may stop
 // waiting independently when their own contexts are canceled.
 //
-// Set and invalidation act as publication barriers for the same key. A load
-// already in flight may still return to callers that joined it, but its result
-// is not cached if that key was changed before publication. Mutations of other
-// keys do not affect the load, even when those keys share the same segment.
+// Set and invalidation act as publication barriers for the same key. If a
+// successful loader result is superseded by a newer Set, Invalidate, or
+// InvalidateAll operation before publication, GetOrLoad discards the loader
+// result and returns ErrLoadSuperseded. Loader errors take precedence over
+// ErrLoadSuperseded. Mutations of other keys do not affect the load, even when
+// those keys share the same segment.
 //
 // The returned found value describes whether the underlying value exists; it
-// is false for both a freshly loaded and a cached negative result.
+// is false for both a freshly loaded and a cached negative result. When err is
+// non-nil, the returned value is the zero value of V and found is false.
 func (cache *Cache[K, V]) GetOrLoad(
 	ctx context.Context,
 	key K,
 	loader Loader[V],
 ) (V, bool, error) {
-	var zero V
+	result, err := cache.getOrLoad(ctx, key, loader)
+	if err != nil {
+		var zero V
 
+		return zero, false, err
+	}
+
+	return result.value, result.found(), nil
+}
+
+// GetOrLoadEntry returns an immutable cache entry snapshot for key or obtains
+// the value from loader and publishes it before returning the snapshot.
+//
+// LookupHit is returned for a positive cached or successfully published value.
+// LookupNegativeHit is returned when a cached negative entry exists or a
+// negative loader result is published because negative caching is enabled.
+// If loader reports found=false while negative caching is disabled, no cache
+// entry is created and GetOrLoadEntry returns the zero Entry with LookupMiss.
+//
+// GetOrLoadEntry has the same lookup, singleflight, publication-barrier, LRU,
+// sliding-expiration, and statistics semantics as GetOrLoad. The two methods
+// differ only in the shape of the returned result.
+//
+// ExpiresAt reflects the exact deadline of the cached entry observed or
+// published by the operation, including TTL jitter. As with GetEntry, the
+// returned Entry is a snapshot and the cache may change immediately after the
+// operation completes.
+func (cache *Cache[K, V]) GetOrLoadEntry(
+	ctx context.Context,
+	key K,
+	loader Loader[V],
+) (Entry[V], LookupStatus, error) {
+	var zero Entry[V]
+
+	result, err := cache.getOrLoad(ctx, key, loader)
+	if err != nil {
+		return zero, LookupMiss, err
+	}
+
+	status := result.status()
+	if status == LookupMiss {
+		return zero, LookupMiss, nil
+	}
+
+	expiresAt := cache.store.expiresAt(result.deadline())
+
+	if status == LookupNegativeHit {
+		return Entry[V]{
+			expiresAt: expiresAt,
+		}, LookupNegativeHit, nil
+	}
+
+	return Entry[V]{
+		value:     result.value,
+		expiresAt: expiresAt,
+	}, LookupHit, nil
+}
+
+// getOrLoad implements the shared operation behind GetOrLoad and
+// GetOrLoadEntry. Both public methods observe the same cache entry, execute the
+// same singleflight wave, and linearize publication at the same point. The
+// returned deadline is metadata from that same observed or published entry;
+// callers that do not need it simply ignore it.
+func (cache *Cache[K, V]) getOrLoad(
+	ctx context.Context,
+	key K,
+	loader Loader[V],
+) (loadResult[V], error) {
 	if !cache.initialized() {
-		return zero, false, errors.New("pacecache: cache is not initialized")
+		return loadResult[V]{}, errors.New("pacecache: cache is not initialized")
 	}
 
 	if ctx == nil {
-		return zero, false, errors.New("pacecache: context is nil")
+		return loadResult[V]{}, errors.New("pacecache: context is nil")
 	}
 
 	if loader == nil {
-		return zero, false, errors.New("pacecache: loader is nil")
+		return loadResult[V]{}, errors.New("pacecache: loader is nil")
 	}
 
 	index := cache.store.segmentIndex(key)
 	stats := cache.stats.segment(index)
 
-	if cached, ok := cache.store.lookupAt(index, key, cache.store.now(), stats); ok {
-		return cached.value, cached.found, nil
+	if cached, ok := cache.store.lookupEntryAt(index, key, cache.store.now(), stats); ok {
+		return loadResultFromCached(cached), nil
 	}
 
 	state := &cache.states[index]
 
-	// Singleflight registration must be atomic with respect to mutations for
-	// this state segment. DoChan only registers or starts the shared call; the
-	// loader itself executes outside state.mu.
+	// Keep singleflight registration ordered with mutations. DoChan only
+	// registers or starts the shared call; loader I/O runs outside state.mu.
 	state.mu.RLock()
 
 	resultChannel := state.group.DoChan(
 		key,
 		func(callState singleflight.CallState) (loadResult[V], error) {
 			// Another caller may have populated the cache between the initial
-			// lookup and this call becoming the singleflight owner.
-			if cached, ok := cache.store.getAt(index, key, cache.store.now(), stats); ok {
-				return loadResult[V]{
-					value: cached.value,
-					found: cached.found,
-				}, nil
+			// lookup and this call becoming the singleflight owner. This lookup
+			// observes the same value and deadline regardless of which public API
+			// started the wave.
+			if cached, ok := cache.store.getEntryAt(index, key, cache.store.now(), stats); ok {
+				return loadResultFromCached(cached), nil
 			}
 
 			startedAt := time.Now()
@@ -320,19 +429,36 @@ func (cache *Cache[K, V]) GetOrLoad(
 				value = zeroValue
 			}
 
-			loaded := loadResult[V]{
-				value: value,
-				found: found,
+			now := cache.store.elapsedAt(finishedAt)
+
+			var (
+				deadline   int64
+				refreshTTL time.Duration
+			)
+
+			if found {
+				refreshTTL = cache.effectiveExpirationTTL(DefaultExpiration)
+				deadline = deadlineAfter(now, refreshTTL)
+			} else if cache.negativeTTL > 0 {
+				deadline = deadlineAfter(now, cache.negativeTTL)
 			}
 
-			// Publication is atomic with respect to Set and invalidation. A load
-			// forgotten by a mutation of this key may still return to callers that
-			// already joined it, but it cannot repopulate the cache afterward.
+			loaded := newLoadResult(value, found, deadline)
+
+			// Publication is atomic with respect to Set and invalidation. If a
+			// mutation forgot this call before publication, every waiter observes
+			// ErrLoadSuperseded rather than a stale loader result.
 			state.mu.RLock()
 
-			if !callState.Forgotten() {
-				cache.storeLoaded(index, key, loaded, cache.store.elapsedAt(finishedAt))
+			if callState.Forgotten() {
+				state.mu.RUnlock()
+
+				cache.stats.recordLoadSuperseded(index)
+
+				return loadResult[V]{}, ErrLoadSuperseded
 			}
+
+			cache.storeLoaded(index, key, loaded, refreshTTL)
 
 			state.mu.RUnlock()
 
@@ -344,7 +470,7 @@ func (cache *Cache[K, V]) GetOrLoad(
 
 	select {
 	case <-ctx.Done():
-		return zero, false, ctx.Err()
+		return loadResult[V]{}, ctx.Err()
 
 	case result := <-resultChannel:
 		if result.Shared {
@@ -352,10 +478,10 @@ func (cache *Cache[K, V]) GetOrLoad(
 		}
 
 		if result.Err != nil {
-			return zero, false, result.Err
+			return loadResult[V]{}, result.Err
 		}
 
-		return result.Val.value, result.Val.found, nil
+		return result.Val, nil
 	}
 }
 
@@ -365,9 +491,10 @@ func (cache *Cache[K, V]) GetOrLoad(
 // expiration overrides the configured TTL for this entry. A negative
 // expiration disables time-based expiration.
 //
-// Set acts as a publication barrier: loads registered before Set may still
-// return to callers already waiting for them, but cannot overwrite the
-// explicitly stored value afterward.
+// Set acts as a publication barrier. A successful loader result that was
+// already in flight for the same key is discarded with ErrLoadSuperseded if
+// Set wins before publication, and cannot overwrite the explicitly stored
+// value afterward.
 func (cache *Cache[K, V]) Set(
 	key K,
 	value V,
@@ -391,9 +518,10 @@ func (cache *Cache[K, V]) Set(
 
 // Invalidate removes the specified keys from the cache.
 //
-// Invalidation acts as a publication barrier: a load registered before
-// Invalidate may still complete for callers already waiting for it, but it
-// cannot repopulate an invalidated key afterward.
+// Invalidation acts as a publication barrier. A successful loader result that
+// was already in flight for an invalidated key is discarded with
+// ErrLoadSuperseded if Invalidate wins before publication, and cannot repopulate
+// the key afterward.
 //
 // Missing keys are ignored. Duplicate keys are allowed.
 //
@@ -480,9 +608,10 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 
 // InvalidateAll removes all entries from the cache.
 //
-// InvalidateAll acts as a cache-wide publication barrier. Loads registered
-// before the barrier may still complete for callers already waiting for them,
-// but they cannot repopulate the cache afterward.
+// InvalidateAll acts as a cache-wide publication barrier. Successful loader
+// results already in flight are discarded with ErrLoadSuperseded if
+// InvalidateAll wins before publication, and cannot repopulate the cache
+// afterward.
 //
 // The removed entries may include physically resident entries whose TTL has
 // already expired but which have not yet been removed.
@@ -551,23 +680,31 @@ func (cache *Cache[K, V]) storeLoaded(
 	index int,
 	key K,
 	loaded loadResult[V],
-	now int64,
+	refreshTTL time.Duration,
 ) {
-	switch {
-	case loaded.found:
-		cache.storePositive(index, key, loaded.value, DefaultExpiration, now)
+	found := loaded.found()
+	deadline := loaded.deadline()
 
-	case cache.negativeTTL > 0:
-		cache.store.setAt(
-			index,
-			key,
-			cachedValue[V]{
-				found: false,
-			},
-			deadlineAfter(now, cache.negativeTTL),
-			cache.stats.segment(index),
-		)
+	if !found && deadline == 0 {
+		return
 	}
+
+	cached := cachedValue[V]{
+		found: found,
+	}
+
+	if found {
+		cached.value = loaded.value
+		cached.refreshTTL = refreshTTL
+	}
+
+	cache.store.setAt(
+		index,
+		key,
+		cached,
+		deadline,
+		cache.stats.segment(index),
+	)
 }
 
 func (cache *Cache[K, V]) storePositive(

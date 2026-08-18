@@ -51,6 +51,14 @@ type Stats struct {
 	// returned an error.
 	LoadErrorCount int64
 
+	// LoadSupersededCount is the cumulative number of successful actual loader
+	// invocations whose result was discarded because a newer Set, Invalidate, or
+	// InvalidateAll operation won before publication.
+	//
+	// Superseded loads are still included in LoadFoundCount or LoadNotFoundCount,
+	// according to the loader result, and are not included in LoadErrorCount.
+	LoadSupersededCount int64
+
 	// LoadDuration is the cumulative duration of actual loader invocations,
 	// including successful, negative, and failed loads.
 	LoadDuration time.Duration
@@ -101,10 +109,11 @@ type segmentStats struct {
 	expirationCount  int64
 
 	// Updated outside a suitable existing lock.
-	loadFoundCount    atomic.Int64
-	loadNotFoundCount atomic.Int64
-	loadErrorCount    atomic.Int64
-	loadDurationNanos atomic.Int64
+	loadFoundCount      atomic.Int64
+	loadNotFoundCount   atomic.Int64
+	loadErrorCount      atomic.Int64
+	loadSupersededCount atomic.Int64
+	loadDurationNanos   atomic.Int64
 
 	sharedCount atomic.Int64
 
@@ -144,6 +153,7 @@ func (cache *Cache[K, V]) Stats() Stats {
 		snapshot.LoadFoundCount += shard.loadFoundCount.Load()
 		snapshot.LoadNotFoundCount += shard.loadNotFoundCount.Load()
 		snapshot.LoadErrorCount += shard.loadErrorCount.Load()
+		snapshot.LoadSupersededCount += shard.loadSupersededCount.Load()
 		snapshot.LoadDuration += time.Duration(shard.loadDurationNanos.Load())
 		snapshot.SharedCount += shard.sharedCount.Load()
 		snapshot.InvalidatedKeyCount += shard.invalidatedKeyCount.Load()
@@ -177,6 +187,10 @@ func (stats *statsCollector) recordLoad(index int, found bool, err error, durati
 	default:
 		counters.loadNotFoundCount.Add(1)
 	}
+}
+
+func (stats *statsCollector) recordLoadSuperseded(index int) {
+	stats.segment(index).loadSupersededCount.Add(1)
 }
 
 func (stats *statsCollector) recordShared(index int) {

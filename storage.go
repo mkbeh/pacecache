@@ -179,6 +179,16 @@ func (storage *storage[K, V]) deadlineAt(expiresAt time.Time) int64 {
 	return int64(deadline)
 }
 
+// expiresAt converts a storage-relative monotonic deadline into time.Time.
+// A zero deadline represents an entry without time-based expiration.
+func (storage *storage[K, V]) expiresAt(deadline int64) time.Time {
+	if storage == nil || deadline == 0 {
+		return time.Time{}
+	}
+
+	return storage.origin.Add(time.Duration(deadline))
+}
+
 func (storage *storage[K, V]) segmentIndex(key K) int {
 	if len(storage.segments) == 1 {
 		return 0
@@ -222,6 +232,15 @@ func (storage *storage[K, V]) lookupAt(
 	return storage.segments[index].lookup(key, now, stats)
 }
 
+func (storage *storage[K, V]) lookupEntryAt(
+	index int,
+	key K,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
+	return storage.segments[index].lookupEntry(key, now, stats)
+}
+
 func (storage *storage[K, V]) getAt(
 	index int,
 	key K,
@@ -229,6 +248,15 @@ func (storage *storage[K, V]) getAt(
 	stats *segmentStats,
 ) (cachedValue[V], bool) {
 	return storage.segments[index].get(key, now, stats)
+}
+
+func (storage *storage[K, V]) getEntryAt(
+	index int,
+	key K,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
+	return storage.segments[index].getEntry(key, now, stats)
 }
 
 func (storage *storage[K, V]) setAt(
@@ -406,6 +434,65 @@ func (segment *storageSegment[K, V]) lookup(
 	return cached, true
 }
 
+func (segment *storageSegment[K, V]) lookupEntry(
+	key K,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	item, ok := segment.entries[key]
+	if !ok {
+		if stats != nil {
+			stats.missCount++
+		}
+
+		return cachedEntry[V]{}, false
+	}
+
+	// TTL controls logical validity. Once an entry expires, it is no longer
+	// considered valid and is removed when observed.
+	if item.deadline != 0 && now >= item.deadline {
+		segment.removeLocked(item)
+
+		if stats != nil {
+			stats.expirationCount++
+			stats.missCount++
+		}
+
+		return cachedEntry[V]{}, false
+	}
+
+	if segment.slidingExpiration && item.refreshTTL > 0 {
+		deadline := deadlineAfter(now, item.refreshTTL)
+
+		// A read may capture now before waiting for the segment lock. Never let a
+		// stale timestamp shorten a deadline established by a newer read or Set.
+		if deadline > item.deadline {
+			segment.expirations.update(item, deadline)
+		}
+	}
+
+	// A live hit always updates LRU recency. Sliding expiration, when enabled,
+	// refreshes positive expiring entries atomically under the same segment lock.
+	segment.moveToFrontLocked(item)
+
+	if stats != nil {
+		if item.found {
+			stats.hitCount++
+		} else {
+			stats.negativeHitCount++
+		}
+	}
+
+	return cachedEntry[V]{
+		value:    item.value,
+		found:    item.found,
+		deadline: item.deadline,
+	}, true
+}
+
 func (segment *storageSegment[K, V]) get(
 	key K,
 	now int64,
@@ -415,6 +502,51 @@ func (segment *storageSegment[K, V]) get(
 	defer segment.mu.Unlock()
 
 	return segment.getLocked(key, now, stats)
+}
+
+func (segment *storageSegment[K, V]) getEntry(
+	key K,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	item, ok := segment.entries[key]
+	if !ok {
+		return cachedEntry[V]{}, false
+	}
+
+	// TTL controls logical validity. Once an entry expires, it is no longer
+	// considered valid and is removed when observed.
+	if item.deadline != 0 && now >= item.deadline {
+		segment.removeLocked(item)
+
+		if stats != nil {
+			stats.expirationCount++
+		}
+
+		return cachedEntry[V]{}, false
+	}
+
+	if segment.slidingExpiration && item.refreshTTL > 0 {
+		deadline := deadlineAfter(now, item.refreshTTL)
+
+		// now may have been captured before waiting for the segment lock. Never
+		// let an older read shorten a deadline established by a newer operation.
+		if deadline > item.deadline {
+			segment.expirations.update(item, deadline)
+		}
+	}
+
+	// A live read always updates LRU recency.
+	segment.moveToFrontLocked(item)
+
+	return cachedEntry[V]{
+		value:    item.value,
+		found:    item.found,
+		deadline: item.deadline,
+	}, true
 }
 
 func (segment *storageSegment[K, V]) getLocked(
