@@ -13,16 +13,21 @@ import (
 )
 
 const (
-	entryCountMetricName        = "pacecache.entry.count"
-	entryLimitMetricName        = "pacecache.entry.limit"
-	segmentCountMetricName      = "pacecache.segment.count"
-	lookupCountMetricName       = "pacecache.lookup.count"
-	loadCountMetricName         = "pacecache.load.count"
-	loadTimeMetricName          = "pacecache.load.time"
-	loadSharedCountMetricName   = "pacecache.load.shared.count"
-	invalidationCountMetricName = "pacecache.entry.invalidation.count"
-	evictionCountMetricName     = "pacecache.entry.eviction.count"
-	expirationCountMetricName   = "pacecache.entry.expiration.count"
+	entryCountMetricName                = "pacecache.entry.count"
+	entryLimitMetricName                = "pacecache.entry.limit"
+	segmentCountMetricName              = "pacecache.segment.count"
+	lookupCountMetricName               = "pacecache.lookup.count"
+	loadCountMetricName                 = "pacecache.load.count"
+	loadTimeMetricName                  = "pacecache.load.time"
+	loadSharedCountMetricName           = "pacecache.load.shared.count"
+	loadSupersededCountMetricName       = "pacecache.load.superseded.count"
+	invalidationCountMetricName         = "pacecache.entry.invalidation.count"
+	cleanupCountMetricName              = "pacecache.cleanup.count"
+	cleanupWorkerRunCountMetricName     = "pacecache.cleanup.worker.run.count"
+	cleanupWorkerPendingCountMetricName = "pacecache.cleanup.worker.pending.count"
+	cleanupWorkerTimeMetricName         = "pacecache.cleanup.worker.time"
+	evictionCountMetricName             = "pacecache.entry.eviction.count"
+	expirationCountMetricName           = "pacecache.entry.expiration.count"
 )
 
 const (
@@ -46,16 +51,21 @@ const (
 )
 
 type cacheMetricInstruments struct {
-	entryCount        metric.Int64ObservableGauge
-	entryLimit        metric.Int64ObservableGauge
-	segmentCount      metric.Int64ObservableGauge
-	lookupCount       metric.Int64ObservableCounter
-	loadCount         metric.Int64ObservableCounter
-	loadTime          metric.Float64ObservableCounter
-	loadSharedCount   metric.Int64ObservableCounter
-	invalidationCount metric.Int64ObservableCounter
-	evictionCount     metric.Int64ObservableCounter
-	expirationCount   metric.Int64ObservableCounter
+	entryCount                metric.Int64ObservableGauge
+	entryLimit                metric.Int64ObservableGauge
+	segmentCount              metric.Int64ObservableGauge
+	lookupCount               metric.Int64ObservableCounter
+	loadCount                 metric.Int64ObservableCounter
+	loadTime                  metric.Float64ObservableCounter
+	loadSharedCount           metric.Int64ObservableCounter
+	loadSupersededCount       metric.Int64ObservableCounter
+	invalidationCount         metric.Int64ObservableCounter
+	cleanupCount              metric.Int64ObservableCounter
+	cleanupWorkerRunCount     metric.Int64ObservableCounter
+	cleanupWorkerPendingCount metric.Int64ObservableCounter
+	cleanupWorkerTime         metric.Float64ObservableCounter
+	evictionCount             metric.Int64ObservableCounter
+	expirationCount           metric.Int64ObservableCounter
 }
 
 type cacheMetricAttributes struct {
@@ -201,6 +211,12 @@ func (instruments cacheMetricInstruments) observe(
 	)
 
 	observer.ObserveInt64(
+		instruments.loadSupersededCount,
+		stats.LoadSupersededCount,
+		attributes.base,
+	)
+
+	observer.ObserveInt64(
 		instruments.invalidationCount,
 		stats.InvalidatedKeyCount,
 		attributes.invalidateKeys,
@@ -210,6 +226,30 @@ func (instruments cacheMetricInstruments) observe(
 		instruments.invalidationCount,
 		stats.InvalidatedAllCount,
 		attributes.invalidateAll,
+	)
+
+	observer.ObserveInt64(
+		instruments.cleanupCount,
+		stats.CleanupCount,
+		attributes.base,
+	)
+
+	observer.ObserveInt64(
+		instruments.cleanupWorkerRunCount,
+		stats.CleanupWorkerRunCount,
+		attributes.base,
+	)
+
+	observer.ObserveInt64(
+		instruments.cleanupWorkerPendingCount,
+		stats.CleanupWorkerPendingCount,
+		attributes.base,
+	)
+
+	observer.ObserveFloat64(
+		instruments.cleanupWorkerTime,
+		stats.CleanupWorkerDuration.Seconds(),
+		attributes.base,
 	)
 
 	observer.ObserveInt64(
@@ -234,7 +274,12 @@ func (instruments cacheMetricInstruments) observables() []metric.Observable {
 		instruments.loadCount,
 		instruments.loadTime,
 		instruments.loadSharedCount,
+		instruments.loadSupersededCount,
 		instruments.invalidationCount,
+		instruments.cleanupCount,
+		instruments.cleanupWorkerRunCount,
+		instruments.cleanupWorkerPendingCount,
+		instruments.cleanupWorkerTime,
 		instruments.evictionCount,
 		instruments.expirationCount,
 	}
@@ -330,6 +375,18 @@ func newCacheMetricInstruments(
 			newMetricError(loadSharedCountMetricName, err)
 	}
 
+	instruments.loadSupersededCount, err = meter.Int64ObservableCounter(
+		loadSupersededCountMetricName,
+		metric.WithDescription(
+			"The cumulative number of successful loader invocations discarded because a newer cache mutation won before publication.",
+		),
+		metric.WithUnit("{load}"),
+	)
+	if err != nil {
+		return cacheMetricInstruments{},
+			newMetricError(loadSupersededCountMetricName, err)
+	}
+
 	instruments.invalidationCount, err = meter.Int64ObservableCounter(
 		invalidationCountMetricName,
 		metric.WithDescription(
@@ -340,6 +397,54 @@ func newCacheMetricInstruments(
 	if err != nil {
 		return cacheMetricInstruments{},
 			newMetricError(invalidationCountMetricName, err)
+	}
+
+	instruments.cleanupCount, err = meter.Int64ObservableCounter(
+		cleanupCountMetricName,
+		metric.WithDescription(
+			"The cumulative number of completed explicit cache cleanup operations.",
+		),
+		metric.WithUnit("{cleanup}"),
+	)
+	if err != nil {
+		return cacheMetricInstruments{},
+			newMetricError(cleanupCountMetricName, err)
+	}
+
+	instruments.cleanupWorkerRunCount, err = meter.Int64ObservableCounter(
+		cleanupWorkerRunCountMetricName,
+		metric.WithDescription(
+			"The cumulative number of cleanup quanta completed by the background cleanup worker.",
+		),
+		metric.WithUnit("{run}"),
+	)
+	if err != nil {
+		return cacheMetricInstruments{},
+			newMetricError(cleanupWorkerRunCountMetricName, err)
+	}
+
+	instruments.cleanupWorkerPendingCount, err = meter.Int64ObservableCounter(
+		cleanupWorkerPendingCountMetricName,
+		metric.WithDescription(
+			"The cumulative number of background cleanup quanta that completed with expired entries still pending.",
+		),
+		metric.WithUnit("{run}"),
+	)
+	if err != nil {
+		return cacheMetricInstruments{},
+			newMetricError(cleanupWorkerPendingCountMetricName, err)
+	}
+
+	instruments.cleanupWorkerTime, err = meter.Float64ObservableCounter(
+		cleanupWorkerTimeMetricName,
+		metric.WithDescription(
+			"The cumulative time spent executing background cleanup quanta.",
+		),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return cacheMetricInstruments{},
+			newMetricError(cleanupWorkerTimeMetricName, err)
 	}
 
 	instruments.evictionCount, err = meter.Int64ObservableCounter(
