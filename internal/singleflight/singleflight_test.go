@@ -1,492 +1,626 @@
 package singleflight
 
 import (
+	"context"
 	"errors"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
+const singleflightTestTimeout = 5 * time.Second
+
 func TestDoReturnsValue(t *testing.T) {
 	var group Group[string, int]
 
-	value, err, shared := group.Do("key", func() (int, error) {
+	wantErr := errors.New("new call is unexpectedly forgotten")
+
+	call := group.Do("key", func(state CallState) (int, error) {
+		if state.Forgotten() {
+			return 0, wantErr
+		}
+
 		return 42, nil
 	})
-	if err != nil || shared || value != 42 {
-		t.Fatalf("Do() = (%d, %v, %t), want (42, nil, false)", value, err, shared)
+
+	result, err := call.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait() error = %v, want nil", err)
+	}
+	if result.Err != nil {
+		t.Fatalf("result error = %v, want nil", result.Err)
+	}
+	if result.Val != 42 {
+		t.Fatalf("result value = %d, want 42", result.Val)
+	}
+	if result.Shared {
+		t.Fatal("result shared = true, want false")
 	}
 }
 
-func TestDoSuppressesDuplicateCalls(t *testing.T) {
+func TestDoReturnsLoaderError(t *testing.T) {
 	var group Group[string, int]
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int64
 
-	type result struct {
-		value  int
-		err    error
-		shared bool
+	wantErr := errors.New("load failed")
+
+	call := group.Do("key", func(CallState) (int, error) {
+		return 0, wantErr
+	})
+
+	result, waitErr := call.Wait(context.Background())
+	if waitErr != nil {
+		t.Fatalf("Wait() error = %v, want nil", waitErr)
 	}
-
-	first := make(chan result, 1)
-	go func() {
-		value, err, shared := group.Do("key", func() (int, error) {
-			calls.Add(1)
-			close(started)
-			<-release
-			return 42, nil
-		})
-		first <- result{value: value, err: err, shared: shared}
-	}()
-
-	<-started
-
-	second := make(chan result, 1)
-	go func() {
-		value, err, shared := group.Do("key", func() (int, error) {
-			calls.Add(1)
-			return 99, nil
-		})
-		second <- result{value: value, err: err, shared: shared}
-	}()
-
-	waitForDuplicates(t, &group, "key", 1)
-	close(release)
-
-	for index, channel := range []<-chan result{first, second} {
-		got := <-channel
-		if got.err != nil || !got.shared || got.value != 42 {
-			t.Fatalf("result %d = (%d, %v, %t), want (42, nil, true)", index, got.value, got.err, got.shared)
-		}
+	if !errors.Is(result.Err, wantErr) {
+		t.Fatalf("result error = %v, want %v", result.Err, wantErr)
 	}
-
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("function calls = %d, want 1", got)
+	if result.Val != 0 {
+		t.Fatalf("result value = %d, want 0", result.Val)
+	}
+	if result.Shared {
+		t.Fatal("result shared = true, want false")
 	}
 }
 
-func TestDoChanSuppressesDuplicateCalls(t *testing.T) {
-	var group Group[int64, string]
-	started := make(chan struct{})
+func TestDoSuppressesManyCallersForSameKey(t *testing.T) {
+	var group Group[string, int]
+
+	const callers = 256
+
+	start := make(chan struct{})
 	release := make(chan struct{})
-	var calls atomic.Int64
+	registered := make(chan struct{}, callers)
+	errorsChannel := make(chan error, callers)
 
-	first := group.DoChan(42, func(CallState) (string, error) {
-		calls.Add(1)
-		close(started)
-		<-release
-		return "Ada", nil
-	})
+	var (
+		loaderCalls atomic.Int64
+		waiters     sync.WaitGroup
+	)
 
-	<-started
+	waiters.Add(callers)
 
-	second := group.DoChan(42, func(CallState) (string, error) {
-		calls.Add(1)
-		return "wrong", nil
-	})
+	for range callers {
+		go func() {
+			defer waiters.Done()
+			<-start
 
-	close(release)
+			call := group.Do("key", func(CallState) (int, error) {
+				loaderCalls.Add(1)
+				<-release
 
-	for index, channel := range []<-chan Result[string]{first, second} {
-		got := <-channel
-		if got.Err != nil || !got.Shared || got.Val != "Ada" {
-			t.Fatalf("result %d = (%q, %v, %t), want (Ada, nil, true)", index, got.Val, got.Err, got.Shared)
-		}
+				return 42, nil
+			})
 
-		select {
-		case _, ok := <-channel:
-			if !ok {
-				t.Fatal("DoChan result channel was closed")
+			registered <- struct{}{}
+
+			result, err := call.Wait(context.Background())
+			if err != nil {
+				errorsChannel <- err
+				return
 			}
-			t.Fatal("DoChan result channel produced more than one result")
-		default:
-		}
+			if result.Err != nil {
+				errorsChannel <- result.Err
+				return
+			}
+			if result.Val != 42 {
+				errorsChannel <- errors.New("unexpected result value")
+				return
+			}
+			if !result.Shared {
+				errorsChannel <- errors.New("result is unexpectedly unshared")
+			}
+		}()
 	}
 
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("function calls = %d, want 1", got)
+	close(start)
+
+	for range callers {
+		receive(t, registered)
+	}
+
+	waitForDuplicates(t, &group, "key", callers-1)
+	close(release)
+
+	waitGroup(t, &waiters)
+	close(errorsChannel)
+
+	for err := range errorsChannel {
+		t.Fatal(err)
+	}
+
+	if got := loaderCalls.Load(); got != 1 {
+		t.Fatalf("loader calls = %d, want 1", got)
 	}
 }
 
-func TestDoChanForgetPreservesExistingWaiters(t *testing.T) {
+func TestDoKeepsDifferentKeysIndependent(t *testing.T) {
+	var group Group[int, int]
+
+	const (
+		keys          = 64
+		callersPerKey = 8
+		totalCallers  = keys * callersPerKey
+	)
+
+	start := make(chan struct{})
+	release := make(chan struct{})
+	registered := make(chan struct{}, totalCallers)
+	errorsChannel := make(chan error, totalCallers)
+
+	calls := make([]atomic.Int64, keys)
+
+	var waiters sync.WaitGroup
+	waiters.Add(totalCallers)
+
+	for key := range keys {
+		for range callersPerKey {
+			go func(key int) {
+				defer waiters.Done()
+				<-start
+
+				call := group.Do(key, func(CallState) (int, error) {
+					calls[key].Add(1)
+					<-release
+
+					return key, nil
+				})
+
+				registered <- struct{}{}
+
+				result, err := call.Wait(context.Background())
+				if err != nil {
+					errorsChannel <- err
+					return
+				}
+				if result.Err != nil {
+					errorsChannel <- result.Err
+					return
+				}
+				if result.Val != key {
+					errorsChannel <- errors.New("cross-key result observed")
+					return
+				}
+				if !result.Shared {
+					errorsChannel <- errors.New("result is unexpectedly unshared")
+				}
+			}(key)
+		}
+	}
+
+	close(start)
+
+	for range totalCallers {
+		receive(t, registered)
+	}
+
+	for key := range keys {
+		waitForDuplicates(t, &group, key, callersPerKey-1)
+	}
+
+	close(release)
+	waitGroup(t, &waiters)
+	close(errorsChannel)
+
+	for err := range errorsChannel {
+		t.Fatal(err)
+	}
+
+	for key := range keys {
+		if got := calls[key].Load(); got != 1 {
+			t.Fatalf("loader calls for key %d = %d, want 1", key, got)
+		}
+	}
+}
+
+func TestWaitCancellationDoesNotCancelWave(t *testing.T) {
 	var group Group[string, int]
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	forgotten := make(chan bool, 1)
 
-	var calls atomic.Int64
-
-	first := group.DoChan("key", func(state CallState) (int, error) {
-		calls.Add(1)
+	first := group.Do("key", func(CallState) (int, error) {
 		close(started)
-
 		<-release
-		forgotten <- state.Forgotten()
 
 		return 42, nil
 	})
 
-	<-started
+	waitClosed(t, started)
 
-	second := group.DoChan("key", func(CallState) (int, error) {
-		calls.Add(1)
+	second := group.Do("key", func(CallState) (int, error) {
 		return 99, nil
 	})
 
-	group.Forget("key")
-	close(release)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	if !<-forgotten {
-		t.Fatal("active call did not observe Forget")
-	}
-
-	for index, resultChannel := range []<-chan Result[int]{first, second} {
-		result := <-resultChannel
-		if result.Err != nil || result.Val != 42 || !result.Shared {
-			t.Fatalf(
-				"result %d = (%d, %v, %t), want (42, nil, true)",
-				index,
-				result.Val,
-				result.Err,
-				result.Shared,
-			)
-		}
-	}
-
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("function calls = %d, want 1", got)
-	}
-}
-
-func TestDoChanForgetAllowsNewCall(t *testing.T) {
-	var group Group[string, int]
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	firstForgotten := make(chan bool, 1)
-	secondForgotten := make(chan bool, 1)
-
-	var calls atomic.Int64
-
-	first := group.DoChan("key", func(state CallState) (int, error) {
-		calls.Add(1)
-		close(started)
-
-		<-release
-		firstForgotten <- state.Forgotten()
-
-		return 42, nil
-	})
-
-	<-started
-	group.Forget("key")
-
-	second := group.DoChan("key", func(state CallState) (int, error) {
-		calls.Add(1)
-		secondForgotten <- state.Forgotten()
-		return 99, nil
-	})
-
-	secondResult := <-second
-	if secondResult.Err != nil || secondResult.Val != 99 || secondResult.Shared {
-		t.Fatalf(
-			"second result = (%d, %v, %t), want (99, nil, false)",
-			secondResult.Val,
-			secondResult.Err,
-			secondResult.Shared,
-		)
-	}
-	if <-secondForgotten {
-		t.Fatal("new call is unexpectedly forgotten")
+	if _, err := first.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait() error = %v, want context.Canceled", err)
 	}
 
 	close(release)
 
-	if !<-firstForgotten {
-		t.Fatal("first call did not observe Forget")
+	result, err := second.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("second Wait() error = %v, want nil", err)
 	}
-
-	firstResult := <-first
-	if firstResult.Err != nil || firstResult.Val != 42 || firstResult.Shared {
-		t.Fatalf(
-			"first result = (%d, %v, %t), want (42, nil, false)",
-			firstResult.Val,
-			firstResult.Err,
-			firstResult.Shared,
-		)
+	if result.Err != nil {
+		t.Fatalf("second result error = %v, want nil", result.Err)
 	}
-
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("function calls = %d, want 2", got)
+	if result.Val != 42 {
+		t.Fatalf("second result value = %d, want 42", result.Val)
+	}
+	if !result.Shared {
+		t.Fatal("second result shared = false, want true")
 	}
 }
 
-func TestDoChanForgetAllMarksActiveCallsForgotten(t *testing.T) {
+func TestForgetMarksOldWaveAndStartsNewWave(t *testing.T) {
 	var group Group[string, int]
 
-	firstStarted := make(chan struct{})
-	secondStarted := make(chan struct{})
-	release := make(chan struct{})
+	oldStarted := make(chan struct{})
+	oldRelease := make(chan struct{})
+	oldForgotten := make(chan bool, 1)
 
-	firstForgotten := make(chan bool, 1)
-	secondForgotten := make(chan bool, 1)
+	oldCall := group.Do("key", func(state CallState) (int, error) {
+		close(oldStarted)
+		<-oldRelease
+		oldForgotten <- state.Forgotten()
 
-	first := group.DoChan("first", func(state CallState) (int, error) {
-		close(firstStarted)
-		<-release
-
-		firstForgotten <- state.Forgotten()
 		return 1, nil
 	})
 
-	second := group.DoChan("second", func(state CallState) (int, error) {
-		close(secondStarted)
-		<-release
+	waitClosed(t, oldStarted)
+	group.Forget("key")
 
-		secondForgotten <- state.Forgotten()
+	newForgotten := make(chan bool, 1)
+	newCall := group.Do("key", func(state CallState) (int, error) {
+		newForgotten <- state.Forgotten()
+
 		return 2, nil
 	})
 
-	<-firstStarted
-	<-secondStarted
-
-	group.ForgetAll()
-	close(release)
-
-	if !<-firstForgotten {
-		t.Fatal("first call did not observe ForgetAll")
+	newResult, err := newCall.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("new Wait() error = %v, want nil", err)
 	}
-	if !<-secondForgotten {
-		t.Fatal("second call did not observe ForgetAll")
+	if newResult.Err != nil || newResult.Val != 2 || newResult.Shared {
+		t.Fatalf("new result = %+v, want value=2 err=nil shared=false", newResult)
+	}
+	if receive(t, newForgotten) {
+		t.Fatal("new wave inherited forgotten state")
 	}
 
-	firstResult := <-first
-	if firstResult.Err != nil || firstResult.Val != 1 {
-		t.Fatalf("first result = (%d, %v), want (1, nil)", firstResult.Val, firstResult.Err)
-	}
+	close(oldRelease)
 
-	secondResult := <-second
-	if secondResult.Err != nil || secondResult.Val != 2 {
-		t.Fatalf("second result = (%d, %v), want (2, nil)", secondResult.Val, secondResult.Err)
+	oldResult, err := oldCall.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("old Wait() error = %v, want nil", err)
+	}
+	if oldResult.Err != nil || oldResult.Val != 1 || oldResult.Shared {
+		t.Fatalf("old result = %+v, want value=1 err=nil shared=false", oldResult)
+	}
+	if !receive(t, oldForgotten) {
+		t.Fatal("old wave did not observe Forget")
 	}
 }
 
-func TestForgetDoesNotLetOldCallDeleteNewCall(t *testing.T) {
+func TestOldForgottenWaveCannotDeleteNewWave(t *testing.T) {
 	var group Group[string, int]
-	firstStarted := make(chan struct{})
-	firstRelease := make(chan struct{})
-	firstDone := make(chan struct{})
 
-	go func() {
-		defer close(firstDone)
-		_, _, _ = group.Do("key", func() (int, error) {
-			close(firstStarted)
-			<-firstRelease
-			return 1, nil
-		})
-	}()
+	oldStarted := make(chan struct{})
+	oldRelease := make(chan struct{})
 
-	<-firstStarted
+	oldCall := group.Do("key", func(CallState) (int, error) {
+		close(oldStarted)
+		<-oldRelease
+
+		return 1, nil
+	})
+
+	waitClosed(t, oldStarted)
 
 	group.mu.Lock()
-	oldCall := group.m["key"]
+	oldCurrent := group.m["key"]
 	group.mu.Unlock()
-	if oldCall == nil {
-		t.Fatal("old call is not registered")
+	if oldCurrent == nil {
+		t.Fatal("old wave is not registered")
 	}
 
 	group.Forget("key")
 
-	secondStarted := make(chan struct{})
-	secondRelease := make(chan struct{})
-	secondDone := make(chan struct{})
-	go func() {
-		defer close(secondDone)
-		_, _, _ = group.Do("key", func() (int, error) {
-			close(secondStarted)
-			<-secondRelease
-			return 2, nil
-		})
-	}()
+	newStarted := make(chan struct{})
+	newRelease := make(chan struct{})
 
-	<-secondStarted
+	newCall := group.Do("key", func(CallState) (int, error) {
+		close(newStarted)
+		<-newRelease
+
+		return 2, nil
+	})
+
+	waitClosed(t, newStarted)
 
 	group.mu.Lock()
-	newCall := group.m["key"]
+	newCurrent := group.m["key"]
 	group.mu.Unlock()
-	if newCall == nil || newCall == oldCall {
-		t.Fatal("new call was not registered after Forget")
+	if newCurrent == nil {
+		t.Fatal("new wave is not registered")
+	}
+	if newCurrent == oldCurrent {
+		t.Fatal("new wave reused old call")
 	}
 
-	close(firstRelease)
-	<-firstDone
+	close(oldRelease)
+
+	oldResult, err := oldCall.Wait(context.Background())
+	if err != nil || oldResult.Err != nil || oldResult.Val != 1 {
+		t.Fatalf("old wave result = %+v, wait error = %v", oldResult, err)
+	}
 
 	group.mu.Lock()
 	current := group.m["key"]
 	group.mu.Unlock()
-	if current != newCall {
-		t.Fatal("old call deleted the newer in-flight call")
+	if current != newCurrent {
+		t.Fatal("old wave completion removed the new active wave")
 	}
 
-	close(secondRelease)
-	<-secondDone
+	close(newRelease)
+
+	newResult, err := newCall.Wait(context.Background())
+	if err != nil || newResult.Err != nil || newResult.Val != 2 {
+		t.Fatalf("new wave result = %+v, wait error = %v", newResult, err)
+	}
 }
 
-func TestDoPropagatesPanic(t *testing.T) {
+func TestForgetAllMarksEveryActiveWave(t *testing.T) {
 	var group Group[string, int]
-	sentinel := errors.New("boom")
 
-	defer func() {
-		recovered := recover()
-		panicErr, ok := recovered.(*panicError)
-		if !ok {
-			t.Fatalf("panic = %T(%v), want *panicError", recovered, recovered)
-		}
-		if !errors.Is(panicErr, sentinel) {
-			t.Fatalf("panic error = %v, want sentinel", panicErr)
-		}
-		if len(panicErr.stack) == 0 {
-			t.Fatal("panic stack is empty")
-		}
-	}()
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	release := make(chan struct{})
 
-	_, _, _ = group.Do("key", func() (int, error) {
-		panic(sentinel)
+	firstForgotten := make(chan bool, 1)
+	secondForgotten := make(chan bool, 1)
+
+	first := group.Do("first", func(state CallState) (int, error) {
+		close(firstStarted)
+		<-release
+		firstForgotten <- state.Forgotten()
+
+		return 1, nil
 	})
-}
 
-func TestPanicErrorUnwrapsOnlyErrors(t *testing.T) {
-	sentinel := errors.New("boom")
+	second := group.Do("second", func(state CallState) (int, error) {
+		close(secondStarted)
+		<-release
+		secondForgotten <- state.Forgotten()
 
-	withErrorValue := newPanicError(sentinel)
+		return 2, nil
+	})
 
-	var withError *panicError
-	if !errors.As(withErrorValue, &withError) {
-		t.Fatalf(
-			"errors.As(%T, *panicError) = false",
-			withErrorValue,
-		)
+	waitClosed(t, firstStarted)
+	waitClosed(t, secondStarted)
+
+	group.ForgetAll()
+
+	group.mu.Lock()
+	active := len(group.m)
+	group.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active calls after ForgetAll() = %d, want 0", active)
 	}
 
-	if !errors.Is(withError, sentinel) {
-		t.Fatalf(
-			"errors.Is(%v, sentinel) = false",
-			withError,
-		)
+	close(release)
+
+	firstResult, firstErr := first.Wait(context.Background())
+	secondResult, secondErr := second.Wait(context.Background())
+
+	if firstErr != nil || firstResult.Err != nil || firstResult.Val != 1 {
+		t.Fatalf("first result = %+v, wait error = %v", firstResult, firstErr)
 	}
-
-	withoutErrorValue := newPanicError("boom")
-
-	var withoutError *panicError
-	if !errors.As(withoutErrorValue, &withoutError) {
-		t.Fatalf(
-			"errors.As(%T, *panicError) = false",
-			withoutErrorValue,
-		)
+	if secondErr != nil || secondResult.Err != nil || secondResult.Val != 2 {
+		t.Fatalf("second result = %+v, wait error = %v", secondResult, secondErr)
 	}
-
-	if withoutError.Unwrap() != nil {
-		t.Fatalf(
-			"Unwrap() = %v, want nil",
-			withoutError.Unwrap(),
-		)
+	if !receive(t, firstForgotten) {
+		t.Fatal("first wave did not observe ForgetAll")
 	}
-
-	if withoutError.Error() == "" {
-		t.Fatal("Error() is empty")
+	if !receive(t, secondForgotten) {
+		t.Fatal("second wave did not observe ForgetAll")
 	}
 }
 
-func TestDoPropagatesGoexitToOwnerAndDuplicate(t *testing.T) {
+func TestGoexitPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 	var group Group[string, int]
+
 	started := make(chan struct{})
 	release := make(chan struct{})
 
-	ownerDone := make(chan struct{})
-	ownerReturned := atomic.Bool{}
+	first := group.Do("key", func(CallState) (int, error) {
+		close(started)
+		<-release
+		runtime.Goexit()
+
+		return 0, nil
+	})
+
+	waitClosed(t, started)
+
+	second := group.Do("key", func(CallState) (int, error) {
+		return 99, nil
+	})
+
+	firstDone := make(chan struct{})
+	secondDone := make(chan struct{})
+	var firstReturned atomic.Bool
+	var secondReturned atomic.Bool
+
 	go func() {
-		defer close(ownerDone)
-		_, _, _ = group.Do("key", func() (int, error) {
-			close(started)
-			<-release
-			runtime.Goexit()
-			return 0, nil
-		})
-		ownerReturned.Store(true)
+		defer close(firstDone)
+		_, _ = first.Wait(context.Background())
+		firstReturned.Store(true)
 	}()
 
-	<-started
-
-	duplicateDone := make(chan struct{})
-	duplicateReturned := atomic.Bool{}
 	go func() {
-		defer close(duplicateDone)
-		_, _, _ = group.Do("key", func() (int, error) {
-			return 1, nil
-		})
-		duplicateReturned.Store(true)
+		defer close(secondDone)
+		_, _ = second.Wait(context.Background())
+		secondReturned.Store(true)
 	}()
 
-	waitForDuplicates(t, &group, "key", 1)
 	close(release)
 
-	select {
-	case <-ownerDone:
-	case <-time.After(time.Second):
-		t.Fatal("owner did not exit")
+	waitClosed(t, firstDone)
+	waitClosed(t, secondDone)
+
+	if firstReturned.Load() {
+		t.Fatal("first waiter returned after runtime.Goexit")
 	}
-	select {
-	case <-duplicateDone:
-	case <-time.After(time.Second):
-		t.Fatal("duplicate did not exit")
+	if secondReturned.Load() {
+		t.Fatal("second waiter returned after runtime.Goexit")
 	}
 
-	if ownerReturned.Load() {
-		t.Fatal("owner returned after runtime.Goexit")
-	}
-	if duplicateReturned.Load() {
-		t.Fatal("duplicate returned after shared runtime.Goexit")
+	next := group.Do("key", func(CallState) (int, error) {
+		return 42, nil
+	})
+	result, err := next.Wait(context.Background())
+	if err != nil || result.Err != nil || result.Val != 42 || result.Shared {
+		t.Fatalf("next wave result = %+v, wait error = %v", result, err)
 	}
 }
 
-func TestForgetUnregisteredKey(t *testing.T) {
-	var group Group[struct{ ID int }, int]
-	group.Forget(struct{ ID int }{ID: 42})
-}
-
-func TestForgetAllEmptyGroup(t *testing.T) {
+func TestPanicCleansUpWaveBeforePropagation(t *testing.T) {
 	var group Group[string, int]
-	group.ForgetAll()
+
+	wantErr := errors.New("boom")
+	current, owner := group.register("key")
+	if !owner {
+		t.Fatal("register() owner = false, want true")
+	}
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+
+		group.doCall("key", current, func(CallState) (int, error) {
+			panic(wantErr)
+		})
+	}()
+
+	assertPanicError(t, recovered, wantErr)
+
+	select {
+	case <-current.done:
+	default:
+		t.Fatal("panicking wave did not close its completion signal")
+	}
+
+	group.mu.Lock()
+	_, active := group.m["key"]
+	group.mu.Unlock()
+	if active {
+		t.Fatal("panicking wave remained registered")
+	}
+
+	next := group.Do("key", func(CallState) (int, error) {
+		return 42, nil
+	})
+	result, err := next.Wait(context.Background())
+	if err != nil || result.Err != nil || result.Val != 42 || result.Shared {
+		t.Fatalf("next wave result = %+v, wait error = %v", result, err)
+	}
+}
+
+func TestZeroCallWaitReturnsCanceled(t *testing.T) {
+	var call Call[int]
+
+	result, err := call.Wait(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait() error = %v, want context.Canceled", err)
+	}
+	if result != (Result[int]{}) {
+		t.Fatalf("Wait() result = %+v, want zero result", result)
+	}
+}
+
+func assertPanicError(t *testing.T, recovered any, want error) {
+	t.Helper()
+
+	panicErr, ok := recovered.(*panicError)
+	if !ok {
+		t.Fatalf("panic = %T(%v), want *panicError", recovered, recovered)
+	}
+	if !errors.Is(panicErr, want) {
+		t.Fatalf("panic error = %v, want errors.Is(..., %v)", panicErr, want)
+	}
+	if len(panicErr.stack) == 0 {
+		t.Fatal("panic stack is empty")
+	}
 }
 
 func waitForDuplicates[K comparable, V any](
 	t *testing.T,
 	group *Group[K, V],
 	key K,
-	want uint32,
+	want int,
 ) {
 	t.Helper()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(singleflightTestTimeout)
 	for time.Now().Before(deadline) {
 		group.mu.Lock()
-		call := group.m[key]
-		var dups uint32
-		if call != nil {
-			dups = call.dups
+		current := group.m[key]
+		var duplicates uint32
+		if current != nil {
+			duplicates = current.dups
 		}
 		group.mu.Unlock()
 
-		if dups >= want {
+		if duplicates >= uint32(want) {
 			return
 		}
 
 		runtime.Gosched()
 	}
 
-	t.Fatalf("duplicate count did not reach %d", want)
+	t.Fatalf("duplicates for key did not reach %d", want)
+}
+
+func waitClosed(t *testing.T, channel <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-channel:
+	case <-time.After(singleflightTestTimeout):
+		t.Fatal("timed out waiting for channel")
+	}
+}
+
+func waitGroup(t *testing.T, group *sync.WaitGroup) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+
+	waitClosed(t, done)
+}
+
+func receive[T any](t *testing.T, channel <-chan T) T {
+	t.Helper()
+
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(singleflightTestTimeout):
+		t.Fatal("timed out waiting for value")
+	}
+
+	var zero T
+	return zero
 }

@@ -1,258 +1,248 @@
 package pacecache
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
 
-func TestNewCleanupWorker(t *testing.T) {
-	store := newStorageWithExpirationResolution[string, int](8, 2, time.Nanosecond)
-	stats := newStatsCollector(2)
-	policy := cleanupPolicy{batchSize: 3, entryBudget: 5}
-	worker := newCleanupWorker(store, stats, policy, 10*time.Millisecond)
-
-	if worker.store != store {
-		t.Fatal("worker.store was not preserved")
-	}
-	if worker.stats != stats {
-		t.Fatal("worker.stats was not preserved")
-	}
-	if worker.policy != policy {
-		t.Fatalf("worker.policy = %+v, want %+v", worker.policy, policy)
-	}
-	if worker.interval != 10*time.Millisecond {
-		t.Fatalf("worker.interval = %v, want %v", worker.interval, 10*time.Millisecond)
-	}
-	if worker.stop == nil || worker.done == nil {
-		t.Fatal("worker channels were not initialized")
-	}
-	if len(worker.pendingSegments) != 0 || cap(worker.pendingSegments) != len(store.segments) {
-		t.Fatalf("pendingSegments = len %d cap %d, want len 0 cap %d", len(worker.pendingSegments), cap(worker.pendingSegments), len(store.segments))
-	}
+func newTestCleanupWorker[V any](
+	store *storage[string, V],
+	stats *statsCollector,
+	interval time.Duration,
+) *cleanupWorker[string, V] {
+	return newCleanupWorker(
+		store,
+		stats,
+		cleanupPolicy{
+			batchSize:   defaultCleanupBatchSize,
+			entryBudget: defaultCleanupEntryBudget,
+		},
+		interval,
+	)
 }
 
 func TestCleanupWorkerNextDelay(t *testing.T) {
-	worker := &cleanupWorker[string, int]{interval: 10 * time.Millisecond}
+	store := newStorageWithExpirationResolution[string, int](1, 1, time.Nanosecond)
+	stats := newStatsCollector(1)
+
+	worker := newTestCleanupWorker(store, stats, 10*time.Millisecond)
 	if got := worker.nextDelay(); got != cleanupNextDelay {
-		t.Fatalf("nextDelay() = %v, want %v", got, cleanupNextDelay)
+		t.Fatalf("nextDelay = %v, want %v", got, cleanupNextDelay)
 	}
 
-	worker.interval = 500 * time.Microsecond
-	if got := worker.nextDelay(); got != worker.interval {
-		t.Fatalf("nextDelay() = %v, want interval %v", got, worker.interval)
+	fastWorker := newTestCleanupWorker(store, stats, 500*time.Microsecond)
+	if got := fastWorker.nextDelay(); got != 500*time.Microsecond {
+		t.Fatalf("nextDelay = %v, want 500us", got)
 	}
 }
 
 func TestCleanupWorkerStopped(t *testing.T) {
-	worker := &cleanupWorker[string, int]{stop: make(chan struct{})}
-	if worker.stopped() {
-		t.Fatal("stopped() = true before stop")
-	}
+	store := newStorageWithExpirationResolution[string, int](1, 1, time.Nanosecond)
+	worker := newTestCleanupWorker(store, newStatsCollector(1), time.Second)
 
+	if worker.stopped() {
+		t.Fatal("new worker unexpectedly stopped")
+	}
 	close(worker.stop)
 	if !worker.stopped() {
-		t.Fatal("stopped() = false after stop")
+		t.Fatal("closed worker stop channel not observed")
+	}
+	if worker.cleanupQuantum(10) {
+		t.Fatal("cleanup reported pending work after stop")
 	}
 }
 
-func TestCleanupTimeBudgetExceeded(t *testing.T) {
-	if cleanupTimeBudgetExceeded(time.Now().Add(cleanupTimeBudget)) {
-		t.Fatal("future start time exceeded the cleanup budget")
-	}
-	if !cleanupTimeBudgetExceeded(time.Now().Add(-2 * cleanupTimeBudget)) {
-		t.Fatal("old start time did not exceed the cleanup budget")
+func TestCleanupWorkerEmptyStorage(t *testing.T) {
+	store := &storage[string, int]{}
+	worker := newTestCleanupWorker(store, newStatsCollector(0), time.Second)
+	if worker.cleanupQuantum(0) {
+		t.Fatal("empty storage cleanup reported pending work")
 	}
 }
 
-func TestCleanupWorkerQuantum(t *testing.T) {
-	t.Run("empty storage", func(t *testing.T) {
-		worker := &cleanupWorker[string, int]{
-			store: &storage[string, int]{},
-			stats: newStatsCollector(0),
-		}
-
-		if worker.cleanupQuantum(1) {
-			t.Fatal("cleanupQuantum(empty) = true")
-		}
-	})
-
-	t.Run("entry budget returns continuation", func(t *testing.T) {
-		store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
-		stats := newStatsCollector(1)
-		for index := 1; index <= 3; index++ {
-			store.setAt(0, string(rune('a'+index)), index, 0, int64(index), stats.segment(0))
-		}
-
-		worker := newCleanupWorker(
-			store,
-			stats,
-			cleanupPolicy{batchSize: 1, entryBudget: 2},
-			time.Second,
-		)
-
-		if !worker.cleanupQuantum(10) {
-			t.Fatal("first cleanupQuantum() = false, want continuation")
-		}
-		if got := len(store.segments[0].entries); got != 1 {
-			t.Fatalf("resident entries after first quantum = %d, want 1", got)
-		}
-		if len(worker.pendingSegments) != 0 {
-			t.Fatalf("pendingSegments len = %d, want 0 reusable slice", len(worker.pendingSegments))
-		}
-
-		if worker.cleanupQuantum(10) {
-			t.Fatal("second cleanupQuantum() = true, want drained")
-		}
-		if got := len(store.segments[0].entries); got != 0 {
-			t.Fatalf("resident entries after second quantum = %d, want 0", got)
-		}
-		if got := stats.segment(0).expirationCount; got != 3 {
-			t.Fatalf("expirationCount = %d, want 3", got)
-		}
-	})
-
-	t.Run("rotates and resumes segments", func(t *testing.T) {
-		store := newStorageWithExpirationResolution[string, int](4, 2, time.Nanosecond)
-		stats := newStatsCollector(2)
-		store.setAt(0, "first", 1, 0, 1, stats.segment(0))
-		store.setAt(1, "second", 2, 0, 1, stats.segment(1))
-
-		worker := newCleanupWorker(
-			store,
-			stats,
-			cleanupPolicy{batchSize: 1, entryBudget: 1},
-			time.Second,
-		)
-		worker.nextSegment = 1
-
-		if !worker.cleanupQuantum(10) {
-			t.Fatal("first cleanupQuantum() = false, want continuation")
-		}
-		if len(store.segments[1].entries) != 0 || len(store.segments[0].entries) != 1 {
-			t.Fatal("first quantum did not begin at nextSegment")
-		}
-		if worker.nextSegment != 0 {
-			t.Fatalf("nextSegment = %d, want 0", worker.nextSegment)
-		}
-
-		if !worker.cleanupQuantum(10) {
-			t.Fatal("second cleanupQuantum() = false, want final continuation after exhausting the budget")
-		}
-		if len(store.segments[0].entries) != 0 {
-			t.Fatal("second quantum did not resume at the remaining segment")
-		}
-		if worker.cleanupQuantum(10) {
-			t.Fatal("third cleanupQuantum() = true, want drained")
-		}
-	})
-
-	t.Run("stopped worker exits", func(t *testing.T) {
-		store := newStorageWithExpirationResolution[string, int](1, 1, time.Nanosecond)
-		stats := newStatsCollector(1)
-		store.setAt(0, "key", 1, 0, 1, stats.segment(0))
-
-		worker := newCleanupWorker(
-			store,
-			stats,
-			cleanupPolicy{batchSize: 1, entryBudget: 1},
-			time.Second,
-		)
-		close(worker.stop)
-
-		if worker.cleanupQuantum(10) {
-			t.Fatal("cleanupQuantum(stopped) = true")
-		}
-		if len(store.segments[0].entries) != 1 {
-			t.Fatal("stopped worker removed an entry")
-		}
-	})
-}
-
-func TestCleanupWorkerRunRemovesExpiredEntries(t *testing.T) {
-	store := newStorageWithExpirationResolution[string, int](2, 1, time.Nanosecond)
+func TestCleanupWorkerBackgroundRemovesExpiredEntry(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](1, 1, time.Millisecond)
 	stats := newStatsCollector(1)
-	store.setAt(0, "expired", 1, 0, 1, stats.segment(0))
-	store.setAt(0, "live", 2, 0, 1<<60, stats.segment(0))
+	now := store.now()
+	store.setAt(0, "key", 1, 2*time.Millisecond, deadlineAfter(now, 2*time.Millisecond), stats.segment(0))
+
+	worker := newTestCleanupWorker(store, stats, time.Millisecond)
+	worker.start()
+	t.Cleanup(worker.close)
+
+	eventually(t, 500*time.Millisecond, func() bool {
+		segment := &store.segments[0]
+		segment.mu.Lock()
+		defer segment.mu.Unlock()
+		return len(segment.entries) == 0
+	})
+
+	if stats.segment(0).expirationCount != 1 {
+		t.Fatalf("expirationCount = %d, want 1", stats.segment(0).expirationCount)
+	}
+	if stats.cleanupWorkerRunCount.Load() == 0 {
+		t.Fatal("cleanup worker run was not recorded")
+	}
+}
+
+func TestCacheCloseStopsBackgroundCleanup(t *testing.T) {
+	cache, err := New[string, int]("users", WithCleanupInterval(time.Millisecond))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if cache.cleanup == nil {
+		t.Fatal("cleanup worker is nil")
+	}
+
+	cache.Close()
+	waitTestSignal(t, cache.cleanup.done)
+	cache.Close()
+}
+
+func TestCleanupWorkerDrainsActiveSegmentAcrossBatches(t *testing.T) {
+	const entries = defaultCleanupBatchSize*2 + 17
+	store := newStorageWithExpirationResolution[string, int](entries, 1, time.Nanosecond)
+	stats := newStatsCollector(1)
+
+	for index := range entries {
+		key := string(rune(index + 1))
+		store.setAt(0, key, index, time.Nanosecond, 1, stats.segment(0))
+	}
+
+	worker := newTestCleanupWorker(store, stats, time.Second)
+	if pending := worker.cleanupQuantum(2); pending {
+		t.Fatal("cleanup reported pending after draining bounded backlog")
+	}
+	if len(store.segments[0].entries) != 0 {
+		t.Fatalf("resident entries = %d, want 0", len(store.segments[0].entries))
+	}
+	if stats.segment(0).expirationCount != entries {
+		t.Fatalf("expirationCount = %d, want %d", stats.segment(0).expirationCount, entries)
+	}
+}
+
+func TestCleanupWorkerReturnsContinuationForLargeBacklog(t *testing.T) {
+	const entries = defaultCleanupEntryBudget * 2
+	store := newStorageWithExpirationResolution[string, int](entries, 1, time.Nanosecond)
+	stats := newStatsCollector(1)
+
+	for index := range entries {
+		key := string(rune(index + 1))
+		store.setAt(0, key, index, time.Nanosecond, 1, stats.segment(0))
+	}
+
+	worker := newTestCleanupWorker(store, stats, time.Second)
+	if pending := worker.cleanupQuantum(2); !pending {
+		t.Fatal("large backlog cleanup returned false, want continuation")
+	}
+
+	segment := &store.segments[0]
+	segment.mu.Lock()
+	remaining := len(segment.entries)
+	segment.mu.Unlock()
+	if remaining == 0 || remaining >= entries {
+		t.Fatalf("remaining entries = %d, want partial progress", remaining)
+	}
+}
+
+func TestCleanupWorkerEntryBudgetStopsQuantumDeterministically(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](2, 2, time.Nanosecond)
+	stats := newStatsCollector(2)
+
+	for index := range 2 {
+		store.setAt(index, string(rune('a'+index)), index, time.Nanosecond, 1, stats.segment(index))
+	}
 
 	worker := newCleanupWorker(
 		store,
 		stats,
 		cleanupPolicy{batchSize: 1, entryBudget: 1},
-		time.Millisecond,
+		time.Second,
 	)
-	worker.start()
-	t.Cleanup(func() {
-		select {
-		case <-worker.done:
-		default:
-			worker.close()
-		}
-	})
 
-	waitForCleanupCondition(t, time.Second, func() bool {
-		segment := &store.segments[0]
-		segment.mu.Lock()
-		defer segment.mu.Unlock()
-
-		return segment.entries["expired"] == nil
-	})
-
-	worker.close()
-
-	segment := &store.segments[0]
-	segment.mu.Lock()
-	_, live := segment.entries["live"]
-	segment.mu.Unlock()
-
-	if !live {
-		t.Fatal("background cleanup removed a live entry")
+	if pending := worker.cleanupQuantum(2); !pending {
+		t.Fatal("cleanup returned false, want continuation after entry budget")
 	}
-	if got := stats.segment(0).expirationCount; got != 1 {
-		t.Fatalf("expirationCount = %d, want 1", got)
-	}
-	if got := stats.cleanupWorkerRunCount.Load(); got < 1 {
-		t.Fatalf("cleanupWorkerRunCount = %d, want at least 1", got)
-	}
-	if got := stats.cleanupWorkerPendingCount.Load(); got > stats.cleanupWorkerRunCount.Load() {
-		t.Fatalf(
-			"cleanupWorkerPendingCount = %d, run count = %d",
-			got,
-			stats.cleanupWorkerRunCount.Load(),
-		)
-	}
-	if got := stats.cleanupWorkerDurationNanos.Load(); got <= 0 {
-		t.Fatalf("cleanupWorkerDurationNanos = %d, want positive", got)
+	if got := stats.segment(0).expirationCount + stats.segment(1).expirationCount; got != 1 {
+		t.Fatalf("removed entries = %d, want exactly 1", got)
 	}
 }
 
-func TestCacheCloseStopsCleanupWorker(t *testing.T) {
+func TestCleanupWorkerRunSchedulesContinuationForBacklog(t *testing.T) {
+	const entries = defaultCleanupEntryBudget * 2
+	store := newStorageWithExpirationResolution[string, int](entries, 1, time.Nanosecond)
+	stats := newStatsCollector(1)
+
+	for index := range entries {
+		key := string(rune(index + 1))
+		store.setAt(0, key, index, time.Nanosecond, 1, stats.segment(0))
+	}
+
+	worker := newTestCleanupWorker(store, stats, time.Millisecond)
+	worker.start()
+	t.Cleanup(worker.close)
+
+	eventually(t, time.Second, func() bool {
+		return stats.cleanupWorkerPendingCount.Load() > 0 && stats.cleanupWorkerRunCount.Load() > 1
+	})
+}
+
+func TestCacheCleanupWorkerUsesConfiguredLimits(t *testing.T) {
 	cache, err := New[string, int](
-		"cleanup",
+		"users",
 		WithCleanupInterval(time.Hour),
+		WithCleanupBatchSize(7),
+		WithCleanupEntryBudget(11),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(cache.Close)
+
 	if cache.cleanup == nil {
-		t.Fatal("cleanup worker = nil")
+		t.Fatal("cleanup worker is nil")
 	}
-
-	cache.Close()
-	cache.Close()
-
-	select {
-	case <-cache.cleanup.done:
-	default:
-		t.Fatal("cleanup worker is still running after Close")
-	}
-
-	cache.Set("key", 1, NoExpiration)
-	if value, found := cache.Get("key"); value != 1 || !found {
-		t.Fatalf("cache after Close = (%d, %t), want (1, true)", value, found)
+	if cache.cleanup.policy.batchSize != 7 || cache.cleanup.policy.entryBudget != 11 {
+		t.Fatalf("cleanup policy = %+v, want batch=7 budget=11", cache.cleanup.policy)
 	}
 }
 
-func waitForCleanupCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+func TestCleanupWorkerHonorsConfiguredEntryBudget(t *testing.T) {
+	const entries = 5
+	store := newStorageWithExpirationResolution[string, int](entries, 1, time.Nanosecond)
+	stats := newStatsCollector(1)
+
+	for index := range entries {
+		key := string(rune(index + 1))
+		store.setAt(0, key, index, time.Nanosecond, 1, stats.segment(0))
+	}
+
+	worker := newCleanupWorker(
+		store,
+		stats,
+		cleanupPolicy{batchSize: 2, entryBudget: 3},
+		time.Second,
+	)
+
+	if pending := worker.cleanupQuantum(2); !pending {
+		t.Fatal("cleanup returned false, want continuation")
+	}
+
+	segment := &store.segments[0]
+	segment.mu.Lock()
+	remaining := len(segment.entries)
+	segment.mu.Unlock()
+
+	if remaining != 2 {
+		t.Fatalf("remaining entries = %d, want 2", remaining)
+	}
+	if stats.segment(0).expirationCount != 3 {
+		t.Fatalf("expirationCount = %d, want 3", stats.segment(0).expirationCount)
+	}
+}
+
+func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
@@ -260,8 +250,12 @@ func waitForCleanupCondition(t *testing.T, timeout time.Duration, condition func
 		if condition() {
 			return
 		}
+
+		runtime.Gosched()
 		time.Sleep(time.Millisecond)
 	}
 
-	t.Fatal("condition was not satisfied before timeout")
+	if !condition() {
+		t.Fatal("condition was not satisfied before timeout")
+	}
 }

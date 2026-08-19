@@ -24,7 +24,9 @@ type cleanupWorker[K comparable, V any] struct {
 	stop     chan struct{}
 	done     chan struct{}
 
-	pendingSegments []int
+	// scratchSegments is reusable temporary storage for segment indexes that
+	// still have due entries after a cleanup pass.
+	scratchSegments []int
 	nextSegment     int
 }
 
@@ -41,7 +43,7 @@ func newCleanupWorker[K comparable, V any](
 		interval:        interval,
 		stop:            make(chan struct{}),
 		done:            make(chan struct{}),
-		pendingSegments: make([]int, 0, len(store.segments)),
+		scratchSegments: make([]int, 0, len(store.segments)),
 	}
 }
 
@@ -96,18 +98,18 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 	startedAt := time.Now()
 	remaining := worker.policy.entryBudget
 
-	pending := worker.pendingSegments[:0]
+	pending := worker.scratchSegments[:0]
 	start := worker.nextSegment
 
 	for offset := range segmentCount {
 		if worker.stopped() {
-			worker.pendingSegments = pending[:0]
+			worker.scratchSegments = pending[:0]
 			return false
 		}
 
 		if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
 			worker.nextSegment = (start + offset) % segmentCount
-			worker.pendingSegments = pending[:0]
+			worker.scratchSegments = pending[:0]
 
 			return true
 		}
@@ -134,7 +136,7 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 
 		for _, index := range pending {
 			if worker.stopped() {
-				worker.pendingSegments = pending[:0]
+				worker.scratchSegments = pending[:0]
 				return false
 			}
 
@@ -142,7 +144,7 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 				// Resume from the first pending segment that this quantum did
 				// not get a chance to process.
 				worker.nextSegment = index
-				worker.pendingSegments = pending[:0]
+				worker.scratchSegments = pending[:0]
 
 				return true
 			}
@@ -162,7 +164,7 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 		pending = next
 	}
 
-	worker.pendingSegments = pending[:0]
+	worker.scratchSegments = pending[:0]
 
 	return false
 }

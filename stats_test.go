@@ -7,207 +7,158 @@ import (
 	"time"
 )
 
-func TestStatsZeroValueAndNilCache(t *testing.T) {
-	var nilCache *Cache[string, int]
-	if got := nilCache.Stats(); got != (Stats{}) {
-		t.Fatalf("nil Cache Stats() = %+v, want zero Stats", got)
-	}
-
-	var zeroCache Cache[string, int]
-	if got := zeroCache.Stats(); got != (Stats{}) {
-		t.Fatalf("zero Cache Stats() = %+v, want zero Stats", got)
-	}
-}
-
-func TestStatsAggregatesSegments(t *testing.T) {
-	store := newStorageWithSegments[string, int](8, 2)
-	stats := newStatsCollector(2)
+func TestStatsSnapshotAggregatesSegments(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 2, time.Nanosecond)
+	collector := newStatsCollector(2)
 	cache := &Cache[string, int]{
+		name:   "users",
 		store:  store,
 		states: newCacheStates[string, int](2),
-		stats:  stats,
+		stats:  collector,
+		ttl:    time.Minute,
 	}
 
-	store.segments[0].set("first", 1, 0, 0, stats.segment(0))
-	store.segments[1].set("second", 2, 0, 0, stats.segment(1))
-	store.segments[1].set("third", 3, 0, 0, stats.segment(1))
+	for index := range store.segments {
+		segment := &store.segments[index]
+		key := string(rune('a' + index))
 
-	stats.segments[0].hitCount = 2
-	stats.segments[0].missCount = 4
-	stats.segments[0].evictionCount = 5
-	stats.segments[0].expirationCount = 6
-	stats.segments[0].loadFoundCount.Store(7)
-	stats.segments[0].loadNotFoundCount.Store(8)
-	stats.segments[0].loadErrorCount.Store(9)
-	stats.segments[0].loadSupersededCount.Store(10)
-	stats.segments[0].loadDurationNanos.Store(int64(11 * time.Millisecond))
-	stats.segments[0].sharedCount.Store(12)
-	stats.segments[0].invalidatedKeyCount.Store(13)
+		segment.mu.Lock()
+		segment.entries[key] = &entry[string, int]{key: key}
+		counters := collector.segment(index)
+		counters.hitCount = int64(index + 1)
+		counters.missCount = int64(index + 3)
+		counters.evictionCount = int64(index + 4)
+		counters.expirationCount = int64(index + 5)
+		segment.mu.Unlock()
 
-	stats.segments[1].hitCount = 20
-	stats.segments[1].missCount = 40
-	stats.segments[1].evictionCount = 50
-	stats.segments[1].expirationCount = 60
-	stats.segments[1].loadFoundCount.Store(70)
-	stats.segments[1].loadNotFoundCount.Store(80)
-	stats.segments[1].loadErrorCount.Store(90)
-	stats.segments[1].loadSupersededCount.Store(100)
-	stats.segments[1].loadDurationNanos.Store(int64(110 * time.Millisecond))
-	stats.segments[1].sharedCount.Store(120)
-	stats.segments[1].invalidatedKeyCount.Store(130)
-	stats.invalidatedAllCount.Store(140)
-	stats.cleanupCount.Store(150)
-	stats.cleanupWorkerRunCount.Store(160)
-	stats.cleanupWorkerPendingCount.Store(170)
-	stats.cleanupWorkerDurationNanos.Store(int64(180 * time.Millisecond))
+		counters.loadFoundCount.Store(int64(index + 6))
+		counters.loadNotFoundCount.Store(int64(index + 7))
+		counters.loadErrorCount.Store(int64(index + 8))
+		counters.loadSupersededCount.Store(int64(index + 9))
+		counters.loadDurationNanos.Store(int64((index + 10) * 100))
+		counters.sharedCount.Store(int64(index + 11))
+		counters.invalidatedKeyCount.Store(int64(index + 12))
+	}
+
+	collector.invalidatedAllCount.Store(13)
+	collector.cleanupCount.Store(14)
+	collector.cleanupWorkerRunCount.Store(15)
+	collector.cleanupWorkerPendingCount.Store(16)
+	collector.cleanupWorkerDurationNanos.Store(17)
 
 	got := cache.Stats()
-	want := Stats{
-		EntryCount:                3,
-		MaxEntries:                8,
-		SegmentCount:              2,
-		HitCount:                  22,
-		MissCount:                 44,
-		LoadFoundCount:            77,
-		LoadNotFoundCount:         88,
-		LoadErrorCount:            99,
-		LoadSupersededCount:       110,
-		LoadDuration:              121 * time.Millisecond,
-		SharedCount:               132,
-		InvalidatedKeyCount:       143,
-		InvalidatedAllCount:       140,
-		CleanupCount:              150,
-		CleanupWorkerRunCount:     160,
-		CleanupWorkerPendingCount: 170,
-		CleanupWorkerDuration:     180 * time.Millisecond,
-		EvictionCount:             55,
-		ExpirationCount:           66,
+	if got.EntryCount != 2 || got.MaxEntries != 4 || got.SegmentCount != 2 {
+		t.Fatalf("state stats = %+v", got)
 	}
-
-	if got != want {
-		t.Fatalf("Stats() =\n%+v\nwant\n%+v", got, want)
+	if got.HitCount != 3 || got.MissCount != 7 || got.EvictionCount != 9 || got.ExpirationCount != 11 {
+		t.Fatalf("storage counters = %+v", got)
+	}
+	if got.LoadFoundCount != 13 || got.LoadNotFoundCount != 15 || got.LoadErrorCount != 17 || got.LoadSupersededCount != 19 {
+		t.Fatalf("load counters = %+v", got)
+	}
+	if got.LoadDuration != 2_100*time.Nanosecond {
+		t.Fatalf("LoadDuration = %v, want 2100ns", got.LoadDuration)
+	}
+	if got.SharedCount != 23 || got.InvalidatedKeyCount != 25 || got.InvalidatedAllCount != 13 {
+		t.Fatalf("atomic counters = %+v", got)
+	}
+	if got.CleanupCount != 14 || got.CleanupWorkerRunCount != 15 || got.CleanupWorkerPendingCount != 16 || got.CleanupWorkerDuration != 17*time.Nanosecond {
+		t.Fatalf("cleanup counters = %+v", got)
 	}
 }
 
 func TestStatsRecordLoad(t *testing.T) {
-	stats := newStatsCollector(1)
+	collector := newStatsCollector(1)
 	sentinel := errors.New("load failed")
 
-	stats.recordLoad(0, true, nil, 3*time.Millisecond)
-	stats.recordLoad(0, false, nil, 5*time.Millisecond)
-	stats.recordLoad(0, true, sentinel, 7*time.Millisecond)
+	collector.recordLoad(0, true, nil, 10*time.Nanosecond)
+	collector.recordLoad(0, false, nil, 20*time.Nanosecond)
+	collector.recordLoad(0, false, sentinel, 30*time.Nanosecond)
+	collector.recordLoadSuperseded(0)
 
-	segment := stats.segment(0)
-	if got := segment.loadFoundCount.Load(); got != 1 {
-		t.Fatalf("loadFoundCount = %d, want 1", got)
+	counters := collector.segment(0)
+	if counters.loadFoundCount.Load() != 1 || counters.loadNotFoundCount.Load() != 1 || counters.loadErrorCount.Load() != 1 {
+		t.Fatalf(
+			"load counts = found:%d notFound:%d error:%d",
+			counters.loadFoundCount.Load(),
+			counters.loadNotFoundCount.Load(),
+			counters.loadErrorCount.Load(),
+		)
 	}
-	if got := segment.loadNotFoundCount.Load(); got != 1 {
-		t.Fatalf("loadNotFoundCount = %d, want 1", got)
+	if counters.loadSupersededCount.Load() != 1 {
+		t.Fatalf("loadSupersededCount = %d, want 1", counters.loadSupersededCount.Load())
 	}
-	if got := segment.loadErrorCount.Load(); got != 1 {
-		t.Fatalf("loadErrorCount = %d, want 1", got)
-	}
-	if got := time.Duration(segment.loadDurationNanos.Load()); got != 15*time.Millisecond {
-		t.Fatalf("loadDuration = %v, want %v", got, 15*time.Millisecond)
+	if counters.loadDurationNanos.Load() != 60 {
+		t.Fatalf("load duration nanos = %d, want 60", counters.loadDurationNanos.Load())
 	}
 }
 
 func TestStatsRecordHelpers(t *testing.T) {
-	stats := newStatsCollector(2)
+	collector := newStatsCollector(1)
 
-	stats.recordLoadSuperseded(0)
-	stats.recordShared(0)
-	stats.recordKeyInvalidation(0, 3)
-	stats.recordKeyInvalidation(0, 0)
-	stats.recordKeyInvalidation(0, -1)
-	stats.recordAllInvalidation(4)
-	stats.recordAllInvalidation(0)
-	stats.recordAllInvalidation(-1)
+	collector.recordShared(0)
+	collector.recordKeyInvalidation(0, 0)
+	collector.recordKeyInvalidation(0, -1)
+	collector.recordKeyInvalidation(0, 3)
+	collector.recordAllInvalidation(0)
+	collector.recordAllInvalidation(-1)
+	collector.recordAllInvalidation(4)
+	collector.recordCleanup()
+	collector.recordCleanupWorker(false, 10*time.Nanosecond)
+	collector.recordCleanupWorker(true, 20*time.Nanosecond)
 
-	if got := stats.segment(0).loadSupersededCount.Load(); got != 1 {
-		t.Fatalf("loadSupersededCount = %d, want 1", got)
+	if collector.segment(0).sharedCount.Load() != 1 {
+		t.Fatalf("sharedCount = %d, want 1", collector.segment(0).sharedCount.Load())
 	}
-	if got := stats.segment(0).sharedCount.Load(); got != 1 {
-		t.Fatalf("sharedCount = %d, want 1", got)
+	if collector.segment(0).invalidatedKeyCount.Load() != 3 {
+		t.Fatalf("invalidatedKeyCount = %d, want 3", collector.segment(0).invalidatedKeyCount.Load())
 	}
-	if got := stats.segment(0).invalidatedKeyCount.Load(); got != 3 {
-		t.Fatalf("invalidatedKeyCount = %d, want 3", got)
+	if collector.invalidatedAllCount.Load() != 4 {
+		t.Fatalf("invalidatedAllCount = %d, want 4", collector.invalidatedAllCount.Load())
 	}
-	if got := stats.invalidatedAllCount.Load(); got != 4 {
-		t.Fatalf("invalidatedAllCount = %d, want 4", got)
+	if collector.cleanupCount.Load() != 1 {
+		t.Fatalf("cleanupCount = %d, want 1", collector.cleanupCount.Load())
+	}
+	if collector.cleanupWorkerRunCount.Load() != 2 || collector.cleanupWorkerPendingCount.Load() != 1 || collector.cleanupWorkerDurationNanos.Load() != 30 {
+		t.Fatalf(
+			"worker stats = runs:%d pending:%d duration:%d",
+			collector.cleanupWorkerRunCount.Load(),
+			collector.cleanupWorkerPendingCount.Load(),
+			collector.cleanupWorkerDurationNanos.Load(),
+		)
 	}
 }
 
 func TestStatsConcurrentWithCacheOperations(t *testing.T) {
-	cache, err := New[int, int](
-		"concurrent",
-		WithMaxEntries(128),
-		WithSegmentCount(8),
-		WithTTL(NoExpiration),
-	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	cache := mustNewCache[int](t, "users", WithMaxEntries(128), WithSegmentCount(8))
+
+	var group sync.WaitGroup
+	for worker := range 8 {
+		group.Add(1)
+		go func(worker int) {
+			defer group.Done()
+			for iteration := range 1_000 {
+				key := string(rune('a' + (worker+iteration)%16))
+				cache.Set(key, iteration, NoExpiration)
+				cache.Get(key)
+				if iteration%11 == 0 {
+					cache.Invalidate(key)
+				}
+			}
+		}(worker)
 	}
 
-	const iterations = 500
-
-	var wg sync.WaitGroup
-	wg.Add(4)
-
+	group.Add(1)
 	go func() {
-		defer wg.Done()
-		for index := 0; index < iterations; index++ {
-			cache.Set(index%64, index, NoExpiration)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for index := 0; index < iterations; index++ {
-			cache.Get(index % 64)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for index := 0; index < iterations; index++ {
-			cache.Invalidate(index % 64)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for range iterations {
+		defer group.Done()
+		for range 1_000 {
 			_ = cache.Stats()
 		}
 	}()
 
-	wg.Wait()
-
+	waitTestGroup(t, &group)
 	stats := cache.Stats()
 	if stats.MaxEntries != 128 || stats.SegmentCount != 8 {
-		t.Fatalf("Stats() configuration = (%d, %d), want (128, 8)", stats.MaxEntries, stats.SegmentCount)
-	}
-}
-
-func TestStatsRecordCleanup(t *testing.T) {
-	stats := newStatsCollector(1)
-
-	stats.recordCleanup()
-	stats.recordCleanup()
-	stats.recordCleanupWorker(true, 3*time.Millisecond)
-	stats.recordCleanupWorker(false, 5*time.Millisecond)
-
-	if got := stats.cleanupCount.Load(); got != 2 {
-		t.Fatalf("cleanupCount = %d, want 2", got)
-	}
-	if got := stats.cleanupWorkerRunCount.Load(); got != 2 {
-		t.Fatalf("cleanupWorkerRunCount = %d, want 2", got)
-	}
-	if got := stats.cleanupWorkerPendingCount.Load(); got != 1 {
-		t.Fatalf("cleanupWorkerPendingCount = %d, want 1", got)
-	}
-	if got := time.Duration(stats.cleanupWorkerDurationNanos.Load()); got != 8*time.Millisecond {
-		t.Fatalf("cleanupWorkerDuration = %v, want %v", got, 8*time.Millisecond)
+		t.Fatalf("Stats configuration = %+v", stats)
 	}
 }

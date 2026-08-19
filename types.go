@@ -43,14 +43,6 @@ type loadResult[V any] struct {
 	found    bool
 }
 
-func loadResultFromCached[V any](cached cachedEntry[V]) loadResult[V] {
-	return loadResult[V]{
-		value:    cached.value,
-		deadline: cached.deadline,
-		found:    true,
-	}
-}
-
 // cachedEntry is an immutable storage snapshot used by entry-aware lookups.
 type cachedEntry[V any] struct {
 	value    V

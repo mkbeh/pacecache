@@ -189,16 +189,6 @@ func (index *expirationIndex[K, V]) popRootEntry() *entry[K, V] {
 	return item
 }
 
-func (index *expirationIndex[K, V]) entryCount() int64 {
-	var total int64
-
-	for _, bucket := range index.bucketHeap {
-		total += int64(bucket.count)
-	}
-
-	return total
-}
-
 func (index *expirationIndex[K, V]) rekeySingletonBucket(
 	item *entry[K, V],
 	oldBucketID int64,

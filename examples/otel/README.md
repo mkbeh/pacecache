@@ -8,8 +8,9 @@ OpenTelemetry SDK exporter configured by the application.
 **It demonstrates:**
 
 - Configuring OpenTelemetry metrics with a custom `MeterProvider`
-- Registering `paceotel` metrics for a cache
-- Observing positive hits, negative hits, loads, misses, and invalidation
+- Attaching `paceotel` metrics to a cache through `pacecache.WithMetrics`
+- Observing cache hits and misses, loader results, and invalidation
+- Returning not-found loader results without storing them in the cache
 - Flushing metrics before a short-lived process exits
 - Managing cache and OpenTelemetry lifecycle correctly
 
@@ -35,7 +36,7 @@ Metrics are associated with the logical cache name:
 
 ```text
 pacecache.name = users
-````
+```
 
 and use the instrumentation scope:
 
@@ -43,10 +44,14 @@ and use the instrumentation scope:
 github.com/mkbeh/pacecache/extra/paceotel
 ```
 
-The example generates metrics for cache size and capacity, lookups, loads, invalidation, eviction, and expiration.
+The integration exposes metrics for cache size and capacity, lookups, loads, invalidation, cleanup, eviction, and
+expiration.
 
-Lookup and load metrics include result attributes such as `hit`, `miss`, `negative_hit`, `found`, `not_found`, and
-`error`.
+Lookup metrics use `lookup.result` values such as `hit` and `miss`. Load metrics use `load.result` values such as
+`found`, `not_found`, and `error`.
+
+In this example, user `404` is intentionally loaded twice. Because a `found=false` loader result is not stored by
+`pacecache`, both lookups reach the repository and are reported as misses with `not_found` load results.
 
 Because the example is short-lived, it calls `ForceFlush` before exiting. Long-running applications normally export
 metrics periodically through the configured OpenTelemetry metric reader.
