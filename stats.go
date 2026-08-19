@@ -49,8 +49,9 @@ type Stats struct {
 	LoadErrorCount int64
 
 	// LoadSupersededCount is the cumulative number of successful actual loader
-	// invocations whose result was discarded because a newer Set, Invalidate, or
-	// InvalidateAll operation won before publication.
+	// invocations whose result was discarded because a newer cache mutation,
+	// such as Set, a GetOrSet or GetOrSetEntry insertion, Invalidate, or InvalidateAll, won before
+	// publication.
 	//
 	// Superseded loads are still included in LoadFoundCount or LoadNotFoundCount,
 	// according to the loader result, and are not included in LoadErrorCount.
@@ -67,8 +68,9 @@ type Stats struct {
 	// Invalidation lifecycle.
 
 	// InvalidatedKeyCount is the cumulative number of resident entries removed by
-	// Invalidate. Missing keys and duplicate keys that were already removed do not
-	// increase the count.
+	// key-scoped invalidation operations such as Invalidate and GetAndInvalidate.
+	// Missing keys and duplicate keys that were already removed do not increase
+	// the count.
 	InvalidatedKeyCount int64
 
 	// InvalidatedAllCount is the cumulative number of resident entries removed by

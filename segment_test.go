@@ -239,6 +239,140 @@ func TestStorageSlidingExpirationSkipsNoExpiration(t *testing.T) {
 	}
 }
 
+func TestStorageGetOrSet(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	stats := &segmentStats{}
+
+	value, found := store.getOrSetAt(
+		0,
+		"key",
+		42,
+		100*time.Nanosecond,
+		200,
+		100,
+		stats,
+	)
+	if found || value != 42 {
+		t.Fatalf("getOrSetAt(missing) = (%d, %t), want (42, false)", value, found)
+	}
+
+	item := store.segments[0].entries["key"]
+	if item == nil || item.value != 42 || item.refreshTTL != 100*time.Nanosecond || item.deadline != 200 {
+		t.Fatalf("stored entry = %+v, want value=42 refreshTTL=100ns deadline=200", item)
+	}
+
+	value, found = store.getOrSetAt(
+		0,
+		"key",
+		99,
+		0,
+		0,
+		110,
+		stats,
+	)
+	if !found || value != 42 {
+		t.Fatalf("getOrSetAt(existing) = (%d, %t), want (42, true)", value, found)
+	}
+	if item.value != 42 || item.refreshTTL != 100*time.Nanosecond || item.deadline != 200 {
+		t.Fatalf("existing entry changed = %+v", item)
+	}
+	if stats.hitCount != 0 || stats.missCount != 0 {
+		t.Fatalf("getOrSetAt changed lookup stats: hit=%d miss=%d", stats.hitCount, stats.missCount)
+	}
+}
+
+func TestStorageGetOrSetReplacesExpiredEntry(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	stats := &segmentStats{}
+
+	store.setAt(0, "key", 1, 50*time.Nanosecond, 100, stats)
+
+	value, found := store.getOrSetAt(
+		0,
+		"key",
+		2,
+		0,
+		0,
+		100,
+		stats,
+	)
+	if found || value != 2 {
+		t.Fatalf("getOrSetAt(expired) = (%d, %t), want (2, false)", value, found)
+	}
+
+	item := store.segments[0].entries["key"]
+	if item == nil || item.value != 2 || item.refreshTTL != 0 || item.deadline != 0 {
+		t.Fatalf("replacement entry = %+v, want value=2 without expiration", item)
+	}
+	if stats.expirationCount != 1 {
+		t.Fatalf("expirationCount = %d, want 1", stats.expirationCount)
+	}
+}
+
+func TestStorageGetOrSetExistingRefreshesSlidingExpirationAndLRU(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	store.enableSlidingExpiration()
+
+	store.setAt(0, "first", 1, 100*time.Nanosecond, 200, nil)
+	store.setAt(0, "second", 2, 0, 0, nil)
+
+	segment := &store.segments[0]
+	if segment.head == nil || segment.head.key != "second" {
+		t.Fatal("unexpected initial LRU order")
+	}
+
+	value, found := store.getOrSetAt(
+		0,
+		"first",
+		99,
+		0,
+		0,
+		150,
+		nil,
+	)
+	if !found || value != 1 {
+		t.Fatalf("getOrSetAt(first) = (%d, %t), want (1, true)", value, found)
+	}
+
+	first := segment.entries["first"]
+	if first.deadline != 250 {
+		t.Fatalf("sliding deadline = %d, want 250", first.deadline)
+	}
+	if segment.head != first {
+		t.Fatal("existing GetOrSet did not move entry to LRU front")
+	}
+	if first.value != 1 {
+		t.Fatalf("existing GetOrSet changed value to %d", first.value)
+	}
+}
+
+func TestStorageGetOrSetEvictsLRUOnInsert(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](2, 1, time.Nanosecond)
+	stats := &segmentStats{}
+
+	store.setAt(0, "first", 1, 0, 0, stats)
+	store.setAt(0, "second", 2, 0, 0, stats)
+
+	// Make second the LRU victim.
+	if _, found := store.lookupAt(0, "first", 1, stats); !found {
+		t.Fatal("lookupAt(first) missed")
+	}
+
+	value, found := store.getOrSetAt(0, "third", 3, 0, 0, 1, stats)
+	if found || value != 3 {
+		t.Fatalf("getOrSetAt(third) = (%d, %t), want (3, false)", value, found)
+	}
+	if _, ok := store.segments[0].entries["second"]; ok {
+		t.Fatal("LRU victim remains resident")
+	}
+	if item := store.segments[0].entries["third"]; item == nil || item.value != 3 {
+		t.Fatalf("inserted entry = %+v, want value=3", item)
+	}
+	if stats.evictionCount != 1 {
+		t.Fatalf("evictionCount = %d, want 1", stats.evictionCount)
+	}
+}
+
 func TestStorageGetAndDelete(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
 	stats := &segmentStats{}
@@ -335,5 +469,85 @@ func TestStorageSegmentCleanupExpiredNoopCases(t *testing.T) {
 	disabled := newStorageWithSegments[string, int](1, 1)
 	if removed, pending := disabled.cleanupExpiredAt(0, 10, 1, nil); removed != 0 || pending {
 		t.Fatalf("cleanup with disabled index = (%d, %t), want (0, false)", removed, pending)
+	}
+}
+
+func TestStorageGetOrSetEntry(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	stats := &segmentStats{}
+
+	cached, found := store.getOrSetEntryAt(
+		0,
+		"key",
+		42,
+		100*time.Nanosecond,
+		200,
+		100,
+		stats,
+	)
+	if found || cached.value != 42 || cached.deadline != 200 {
+		t.Fatalf(
+			"getOrSetEntryAt(missing) = (%+v, %t), want value=42 deadline=200 found=false",
+			cached,
+			found,
+		)
+	}
+
+	cached, found = store.getOrSetEntryAt(
+		0,
+		"key",
+		99,
+		0,
+		0,
+		110,
+		stats,
+	)
+	if !found || cached.value != 42 || cached.deadline != 200 {
+		t.Fatalf(
+			"getOrSetEntryAt(existing) = (%+v, %t), want value=42 deadline=200 found=true",
+			cached,
+			found,
+		)
+	}
+	if stats.hitCount != 0 || stats.missCount != 0 {
+		t.Fatalf("getOrSetEntryAt changed lookup stats: hit=%d miss=%d", stats.hitCount, stats.missCount)
+	}
+}
+
+func TestStorageGetOrSetEntryExistingRefreshesSlidingExpirationAndLRU(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	store.enableSlidingExpiration()
+
+	store.setAt(0, "first", 1, 100*time.Nanosecond, 200, nil)
+	store.setAt(0, "second", 2, 0, 0, nil)
+
+	segment := &store.segments[0]
+	if segment.head == nil || segment.head.key != "second" {
+		t.Fatal("unexpected initial LRU order")
+	}
+
+	cached, found := store.getOrSetEntryAt(
+		0,
+		"first",
+		99,
+		0,
+		0,
+		150,
+		nil,
+	)
+	if !found || cached.value != 1 || cached.deadline != 250 {
+		t.Fatalf(
+			"getOrSetEntryAt(first) = (%+v, %t), want value=1 deadline=250 found=true",
+			cached,
+			found,
+		)
+	}
+
+	first := segment.entries["first"]
+	if segment.head != first {
+		t.Fatal("existing GetOrSetEntry did not move entry to LRU front")
+	}
+	if first.value != 1 {
+		t.Fatalf("existing GetOrSetEntry changed value to %d", first.value)
 	}
 }

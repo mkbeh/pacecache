@@ -197,6 +197,14 @@ func (segment *storageSegment[K, V]) getEntry(
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
+	return segment.getEntryLocked(key, now, stats)
+}
+
+func (segment *storageSegment[K, V]) getEntryLocked(
+	key K,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
 	item, ok := segment.entries[key]
 	if !ok {
 		return cachedEntry[V]{}, false
@@ -292,6 +300,73 @@ func (segment *storageSegment[K, V]) set(
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
+	segment.setLocked(key, value, refreshTTL, deadline, stats)
+}
+
+func (segment *storageSegment[K, V]) getOrSet(
+	key K,
+	value V,
+	refreshTTL time.Duration,
+	deadline int64,
+	now int64,
+	stats *segmentStats,
+) (V, bool) {
+	// A zero-capacity segment is possible only through direct internal
+	// construction. Nothing can be retained in such a segment.
+	if segment.maxEntries == 0 {
+		var zero V
+
+		return zero, false
+	}
+
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	if current, found := segment.getLocked(key, now, stats); found {
+		return current, true
+	}
+
+	segment.setLocked(key, value, refreshTTL, deadline, stats)
+
+	return value, false
+}
+
+func (segment *storageSegment[K, V]) getOrSetEntry(
+	key K,
+	value V,
+	refreshTTL time.Duration,
+	deadline int64,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
+	// A zero-capacity segment is possible only through direct internal
+	// construction. Nothing can be retained in such a segment.
+	if segment.maxEntries == 0 {
+		return cachedEntry[V]{}, false
+	}
+
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	if current, found := segment.getEntryLocked(key, now, stats); found {
+		return current, true
+	}
+
+	segment.setLocked(key, value, refreshTTL, deadline, stats)
+
+	return cachedEntry[V]{
+		value:    value,
+		deadline: deadline,
+	}, false
+}
+
+func (segment *storageSegment[K, V]) setLocked(
+	key K,
+	value V,
+	refreshTTL time.Duration,
+	deadline int64,
+	stats *segmentStats,
+) {
 	if deadline == 0 {
 		refreshTTL = 0
 	}

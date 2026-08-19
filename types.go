@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Entry is an immutable snapshot returned by GetEntry or GetOrLoadEntry.
+// Entry is an immutable snapshot returned by GetEntry, GetOrLoadEntry, or GetOrSetEntry.
 //
 // ExpiresAt returns the entry expiration time. It returns the zero time for an
 // entry stored with NoExpiration.

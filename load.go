@@ -30,10 +30,10 @@ type cacheState[K comparable, V any] struct {
 // context of the caller that starts the shared load. Other callers may stop
 // waiting independently when their own contexts are canceled.
 //
-// Set and invalidation act as publication barriers for the same key. If a
-// successful loader result is superseded by a newer Set, Invalidate, or
-// InvalidateAll operation before publication, GetOrLoad discards the loader
-// result and returns ErrLoadSuperseded. Loader errors take precedence over
+// Set, a GetOrSet or GetOrSetEntry insertion, and invalidation act as publication barriers for
+// the same key. If a successful loader result is superseded by a newer cache
+// mutation before publication, GetOrLoad discards the loader result and returns
+// ErrLoadSuperseded. Loader errors take precedence over
 // ErrLoadSuperseded. Mutations of other keys do not affect the load, even when
 // those keys share the same segment.
 //
@@ -176,7 +176,7 @@ func (cache *Cache[K, V]) getOrLoad(
 				found:    found,
 			}
 
-			// Publication is ordered with Set and invalidation. A mutation that
+			// Publication is ordered with cache mutations. A mutation that
 			// wins first makes this successful load result stale for every waiter,
 			// including a successful found=false result.
 			state.mu.RLock()

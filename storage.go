@@ -195,6 +195,44 @@ func (storage *storage[K, V]) setAt(
 	storage.segments[index].set(key, value, refreshTTL, deadline, stats)
 }
 
+func (storage *storage[K, V]) getOrSetAt(
+	index int,
+	key K,
+	value V,
+	refreshTTL time.Duration,
+	deadline int64,
+	now int64,
+	stats *segmentStats,
+) (V, bool) {
+	return storage.segments[index].getOrSet(
+		key,
+		value,
+		refreshTTL,
+		deadline,
+		now,
+		stats,
+	)
+}
+
+func (storage *storage[K, V]) getOrSetEntryAt(
+	index int,
+	key K,
+	value V,
+	refreshTTL time.Duration,
+	deadline int64,
+	now int64,
+	stats *segmentStats,
+) (cachedEntry[V], bool) {
+	return storage.segments[index].getOrSetEntry(
+		key,
+		value,
+		refreshTTL,
+		deadline,
+		now,
+		stats,
+	)
+}
+
 func (storage *storage[K, V]) getAndDeleteAt(
 	index int,
 	key K,
