@@ -42,6 +42,47 @@ func (cache *Cache[K, V]) Set(
 	state.mu.Unlock()
 }
 
+// GetAndInvalidate atomically returns the live value for key and removes it
+// from the cache. Missing and expired entries return the zero value with
+// found=false. Expired entries are reclaimed as expirations.
+//
+// GetAndInvalidate acts as a publication barrier for the same key. An in-flight
+// successful loader result is discarded with ErrLoadSuperseded if this method
+// wins before publication, even when no resident entry exists.
+//
+// The operation does not refresh sliding expiration, update LRU recency, or
+// affect lookup hit/miss statistics. A successfully removed live entry is
+// counted as a key invalidation.
+func (cache *Cache[K, V]) GetAndInvalidate(key K) (V, bool) {
+	var zero V
+
+	if !cache.initialized() {
+		return zero, false
+	}
+
+	index := cache.store.segmentIndex(key)
+	state := &cache.states[index]
+
+	state.mu.Lock()
+
+	state.group.Forget(key)
+
+	value, found := cache.store.getAndDeleteAt(
+		index,
+		key,
+		cache.store.now(),
+		cache.stats.segment(index),
+	)
+
+	state.mu.Unlock()
+
+	if found {
+		cache.stats.recordKeyInvalidation(index, 1)
+	}
+
+	return value, found
+}
+
 // Invalidate removes the specified keys from the cache.
 //
 // Invalidation acts as a publication barrier. A successful loader result that

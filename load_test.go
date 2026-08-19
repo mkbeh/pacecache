@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGetOrLoadCachesPositiveResult(t *testing.T) {
@@ -61,7 +62,13 @@ func TestGetOrLoadNotFoundIsNotCached(t *testing.T) {
 }
 
 func TestGetOrLoadEntryPositiveAndNotFound(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](
+		t,
+		"users",
+		WithMaxEntries(8),
+		WithSegmentCount(1),
+		WithTTL(time.Minute),
+	)
 
 	entry, found, err := cache.GetOrLoadEntry(
 		context.Background(),
@@ -179,7 +186,6 @@ func TestGetOrLoadCoalescesConcurrentMisses(t *testing.T) {
 		select {
 		case <-release:
 			return 42, true, nil
-
 		case <-ctx.Done():
 			return 0, false, ctx.Err()
 		}
@@ -302,7 +308,13 @@ func TestNewCacheStatesInitializesSingleflightGroups(t *testing.T) {
 }
 
 func TestGetOrLoadAndGetOrLoadEntryShareOneWave(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](
+		t,
+		"users",
+		WithMaxEntries(8),
+		WithSegmentCount(1),
+		WithTTL(time.Minute),
+	)
 
 	started := make(chan struct{})
 	release := make(chan struct{})

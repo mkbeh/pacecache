@@ -9,7 +9,7 @@ import (
 
 const (
 	defaultMaxEntries = 10_000
-	defaultTTL        = time.Minute
+	defaultTTL        = NoExpiration
 	maxDuration       = time.Duration(math.MaxInt64)
 )
 

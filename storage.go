@@ -195,6 +195,15 @@ func (storage *storage[K, V]) setAt(
 	storage.segments[index].set(key, value, refreshTTL, deadline, stats)
 }
 
+func (storage *storage[K, V]) getAndDeleteAt(
+	index int,
+	key K,
+	now int64,
+	stats *segmentStats,
+) (V, bool) {
+	return storage.segments[index].getAndDelete(key, now, stats)
+}
+
 func (storage *storage[K, V]) deleteAt(
 	index int,
 	key K,

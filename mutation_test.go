@@ -1,6 +1,8 @@
 package pacecache
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,178 @@ func TestCacheSetOverwritesExistingValue(t *testing.T) {
 	}
 	if got := cache.Stats().EntryCount; got != 1 {
 		t.Fatalf("EntryCount = %d, want 1", got)
+	}
+}
+
+func TestCacheGetAndInvalidate(t *testing.T) {
+	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache.Set("key", 42, NoExpiration)
+
+	before := cache.Stats()
+
+	value, found := cache.GetAndInvalidate("key")
+	if !found || value != 42 {
+		t.Fatalf("GetAndInvalidate(key) = (%d, %t), want (42, true)", value, found)
+	}
+	if cache.Exists("key") {
+		t.Fatal("key remains cached after GetAndInvalidate")
+	}
+
+	after := cache.Stats()
+	if after.InvalidatedKeyCount != before.InvalidatedKeyCount+1 {
+		t.Fatalf("InvalidatedKeyCount = %d, want %d", after.InvalidatedKeyCount, before.InvalidatedKeyCount+1)
+	}
+	if after.HitCount != before.HitCount || after.MissCount != before.MissCount {
+		t.Fatalf("GetAndInvalidate changed lookup stats: hits=%d/%d misses=%d/%d", before.HitCount, after.HitCount, before.MissCount, after.MissCount)
+	}
+
+	value, found = cache.GetAndInvalidate("missing")
+	if found || value != 0 {
+		t.Fatalf("GetAndInvalidate(missing) = (%d, %t), want (0, false)", value, found)
+	}
+	if got := cache.Stats().InvalidatedKeyCount; got != after.InvalidatedKeyCount {
+		t.Fatalf("missing key changed InvalidatedKeyCount to %d", got)
+	}
+}
+
+func TestCacheGetAndInvalidateIsAtomic(t *testing.T) {
+	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache.Set("key", 42, NoExpiration)
+
+	const callers = 32
+
+	type result struct {
+		value int
+		found bool
+	}
+
+	start := make(chan struct{})
+	results := make(chan result, callers)
+
+	var group sync.WaitGroup
+	group.Add(callers)
+
+	for range callers {
+		go func() {
+			defer group.Done()
+			<-start
+
+			value, found := cache.GetAndInvalidate("key")
+			results <- result{value: value, found: found}
+		}()
+	}
+
+	close(start)
+	waitTestGroup(t, &group)
+	close(results)
+
+	foundCount := 0
+	for current := range results {
+		if current.found {
+			foundCount++
+			if current.value != 42 {
+				t.Fatalf("winning GetAndInvalidate() value = %d, want 42", current.value)
+			}
+			continue
+		}
+
+		if current.value != 0 {
+			t.Fatalf("losing GetAndInvalidate() value = %d, want zero", current.value)
+		}
+	}
+
+	if foundCount != 1 {
+		t.Fatalf("successful GetAndInvalidate() calls = %d, want 1", foundCount)
+	}
+	if got := cache.Stats().InvalidatedKeyCount; got != 1 {
+		t.Fatalf("InvalidatedKeyCount = %d, want 1", got)
+	}
+}
+
+func TestCacheGetAndInvalidateExpiredEntry(t *testing.T) {
+	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	index := cache.store.segmentIndex("expired")
+
+	cache.store.setAt(
+		index,
+		"expired",
+		7,
+		time.Nanosecond,
+		-1,
+		cache.stats.segment(index),
+	)
+
+	before := cache.Stats()
+
+	value, found := cache.GetAndInvalidate("expired")
+	if found || value != 0 {
+		t.Fatalf("GetAndInvalidate(expired) = (%d, %t), want (0, false)", value, found)
+	}
+	if cache.Exists("expired") {
+		t.Fatal("expired entry remains resident")
+	}
+
+	after := cache.Stats()
+	if after.ExpirationCount != before.ExpirationCount+1 {
+		t.Fatalf("ExpirationCount = %d, want %d", after.ExpirationCount, before.ExpirationCount+1)
+	}
+	if after.InvalidatedKeyCount != before.InvalidatedKeyCount {
+		t.Fatalf("expired entry changed InvalidatedKeyCount to %d", after.InvalidatedKeyCount)
+	}
+}
+
+func TestCacheGetAndInvalidateSupersedesInflightLoad(t *testing.T) {
+	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan error, 1)
+
+	go func() {
+		_, _, err := cache.GetOrLoad(
+			context.Background(),
+			"key",
+			func(context.Context) (int, bool, error) {
+				close(started)
+				<-release
+
+				return 42, true, nil
+			},
+		)
+		result <- err
+	}()
+
+	waitTestSignal(t, started)
+
+	value, found := cache.GetAndInvalidate("key")
+	if found || value != 0 {
+		t.Fatalf("GetAndInvalidate(key) during load = (%d, %t), want (0, false)", value, found)
+	}
+
+	close(release)
+
+	if err := receiveTestValue(t, result); !errors.Is(err, ErrLoadSuperseded) {
+		t.Fatalf("GetOrLoad() error = %v, want ErrLoadSuperseded", err)
+	}
+	if cache.Exists("key") {
+		t.Fatal("superseded loader repopulated key")
+	}
+
+	stats := cache.Stats()
+	if stats.LoadSupersededCount != 1 {
+		t.Fatalf("LoadSupersededCount = %d, want 1", stats.LoadSupersededCount)
+	}
+	if stats.InvalidatedKeyCount != 0 {
+		t.Fatalf("InvalidatedKeyCount = %d, want 0 for missing resident key", stats.InvalidatedKeyCount)
+	}
+}
+
+func TestZeroValueCacheGetAndInvalidate(t *testing.T) {
+	var cache Cache[string, int]
+
+	value, found := cache.GetAndInvalidate("key")
+	if found || value != 0 {
+		t.Fatalf("GetAndInvalidate() = (%d, %t), want (0, false)", value, found)
 	}
 }
 

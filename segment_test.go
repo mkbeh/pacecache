@@ -239,6 +239,43 @@ func TestStorageSlidingExpirationSkipsNoExpiration(t *testing.T) {
 	}
 }
 
+func TestStorageGetAndDelete(t *testing.T) {
+	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
+	stats := &segmentStats{}
+
+	store.setAt(0, "first", 1, 100*time.Nanosecond, 1_000, stats)
+	store.setAt(0, "second", 2, 0, 0, stats)
+
+	value, found := store.getAndDeleteAt(0, "first", 100, stats)
+	if !found || value != 1 {
+		t.Fatalf("getAndDeleteAt(first) = (%d, %t), want (1, true)", value, found)
+	}
+	if _, ok := store.segments[0].entries["first"]; ok {
+		t.Fatal("getAndDeleteAt left live entry resident")
+	}
+	if store.segments[0].head == nil || store.segments[0].head.key != "second" || store.segments[0].tail != store.segments[0].head {
+		t.Fatal("getAndDeleteAt corrupted LRU membership")
+	}
+	if stats.hitCount != 0 || stats.missCount != 0 {
+		t.Fatalf("getAndDeleteAt changed lookup stats: hit=%d miss=%d", stats.hitCount, stats.missCount)
+	}
+
+	if value, found := store.getAndDeleteAt(0, "missing", 100, stats); found || value != 0 {
+		t.Fatalf("getAndDeleteAt(missing) = (%d, %t), want (0, false)", value, found)
+	}
+
+	store.setAt(0, "expired", 3, 50*time.Nanosecond, 200, stats)
+	if value, found := store.getAndDeleteAt(0, "expired", 200, stats); found || value != 0 {
+		t.Fatalf("getAndDeleteAt(expired) = (%d, %t), want (0, false)", value, found)
+	}
+	if _, ok := store.segments[0].entries["expired"]; ok {
+		t.Fatal("getAndDeleteAt left expired entry resident")
+	}
+	if stats.expirationCount != 1 {
+		t.Fatalf("expirationCount = %d, want 1", stats.expirationCount)
+	}
+}
+
 func TestStorageDeleteAndDeleteAll(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
 	store.setAt(0, "a", 1, 100*time.Nanosecond, 100, nil)

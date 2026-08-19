@@ -341,6 +341,39 @@ func (segment *storageSegment[K, V]) set(
 	segment.pushFrontLocked(item)
 }
 
+func (segment *storageSegment[K, V]) getAndDelete(
+	key K,
+	now int64,
+	stats *segmentStats,
+) (V, bool) {
+	segment.mu.Lock()
+	defer segment.mu.Unlock()
+
+	item, ok := segment.entries[key]
+	if !ok {
+		var zero V
+
+		return zero, false
+	}
+
+	if item.deadline != 0 && now >= item.deadline {
+		segment.removeLocked(item)
+
+		if stats != nil {
+			stats.expirationCount++
+		}
+
+		var zero V
+
+		return zero, false
+	}
+
+	value := item.value
+	segment.removeLocked(item)
+
+	return value, true
+}
+
 func (segment *storageSegment[K, V]) delete(key K) bool {
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
