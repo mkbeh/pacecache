@@ -2,18 +2,18 @@
 
 This example demonstrates a typical cache-aside workflow with `pacecache` and an in-memory user repository.
 
-**It demonstrates:**
+## Key Concepts Covered
 
 - Configuring a bounded generic cache with TTL and jitter
-- Loading missing values through `GetOrLoad`
-- Reading cached values and entry metadata with `Get` and `GetEntry`
-- Returning not-found loader results without storing them
-- Invalidating cached data and reloading it from the underlying repository
-- Inspecting cumulative cache statistics
+- Loading missing values with `GetOrLoad`
+- Reading cached values and expiration metadata with `Get` and `GetEntry`
+- Handling missing loader results without caching them
+- Invalidating cached values and reloading them from the repository
+- Inspecting cache state and cumulative statistics
 
 ## Run
 
-From this example directory:
+Run the example from this directory:
 
 ```bash
 go run .
@@ -25,9 +25,7 @@ Or from the repository root:
 go run ./examples/basic
 ```
 
-The example is a standalone Go module connected to the repository through `go.work`, so it uses the local `pacecache` checkout.
-
-## Example output
+## Example Output
 
 ```text
 cache:
@@ -49,11 +47,12 @@ stats:
 - entries=1 hits=2 misses=4
 - loads_found=2 loads_not_found=2 load_errors=0
 - invalidated_keys=1 evictions=0 expirations=0
-```
+````
 
-The first lookup for user `42` loads the value from the repository and caches it. Subsequent `Get` and `GetEntry`
-calls read the cached entry without invoking the repository again.
-
-User `404` does not exist. Not-found loader results are not stored, so both `GetOrLoad` calls reach the repository.
-
-After `Invalidate(42)`, the next `GetOrLoad` reloads the user from the repository and publishes a new cache entry.
+* **Cache-Aside Loading:** The first lookup for user `42` loads the value from the repository and stores it in the
+  cache. Subsequent `Get` and `GetEntry` operations return the cached value without calling the repository again, so the
+  repository load count remains at `1`.
+* **Missing Results:** Missing results are not cached. Looking up user `404` twice therefore invokes the repository
+  twice and produces two `not_found` loader outcomes.
+* **Invalidation:** After `Invalidate("42")`, the next lookup loads the value from the repository again and stores the
+  fresh result in the cache, increasing the repository load count to `4`.

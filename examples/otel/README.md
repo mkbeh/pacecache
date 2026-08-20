@@ -1,22 +1,22 @@
-# OpenTelemetry metrics
+# OpenTelemetry Metrics
 
-This example shows how to integrate `pacecache` with OpenTelemetry metrics using the optional `extra/paceotel` package.
+This example demonstrates how to integrate `pacecache` with OpenTelemetry using the optional `paceotel` package.
 
-The example uses the stdout exporter for simplicity, while `paceotel` remains exporter-agnostic and works with any
-OpenTelemetry SDK exporter configured by the application.
+It uses the stdout exporter for a minimal setup. `paceotel` is exporter-agnostic, so the application can use any
+OpenTelemetry SDK exporter without changing the cache integration.
 
-**It demonstrates:**
+## Key Concepts Covered
 
-- Configuring OpenTelemetry metrics with a custom `MeterProvider`
-- Attaching `paceotel` metrics to a cache through `pacecache.WithMetrics`
-- Observing cache hits and misses, loader results, and invalidation
-- Returning not-found loader results without storing them in the cache
-- Flushing metrics before a short-lived process exits
-- Managing cache and OpenTelemetry lifecycle correctly
+- Configuring OpenTelemetry with a custom `MeterProvider`
+- Attaching `paceotel` to a cache through `pacecache.WithMetrics`
+- Observing hits, misses, loader outcomes, and invalidations
+- Handling not-found loader results without caching them
+- Flushing telemetry before a short-lived process exits
+- Managing cache and OpenTelemetry lifecycles correctly
 
 ## Run
 
-From this example directory:
+Run the example from this directory:
 
 ```bash
 go run .
@@ -25,33 +25,21 @@ go run .
 Or from the repository root:
 
 ```bash
-go run ./examples/otel
+go run ./examples/basic
 ```
 
-## Metrics
+## Metrics Specification
 
-The stdout exporter prints the collected OpenTelemetry metrics as JSON.
+The example uses the stdout exporter to emit collected OpenTelemetry metrics as JSON. Metrics are associated with the
+logical cache instance through the `pacecache.name` attribute, while the integration records cache size, capacity,
+lookups, loader outcomes, invalidations, cleanup activity, evictions, and expirations.
 
-Metrics are associated with the logical cache name:
+Metrics include attributes for distinguishing operation outcomes. The `lookup.result` attribute identifies cache
+lookups as `hit` or `miss`, while `load.result` identifies loader outcomes as `found`, `not_found`, or `error`.
 
-```text
-pacecache.name = users
-```
+The exported metrics also reflect the cache-aside behavior of missing results. Requesting user `404` twice produces two
+cache misses and two `not_found` loader outcomes because results returned with `found=false` are not stored in the cache.
+Each subsequent lookup therefore invokes the repository again.
 
-and use the instrumentation scope:
-
-```text
-github.com/mkbeh/pacecache/extra/paceotel
-```
-
-The integration exposes metrics for cache size and capacity, lookups, loads, invalidation, cleanup, eviction, and
-expiration.
-
-Lookup metrics use `lookup.result` values such as `hit` and `miss`. Load metrics use `load.result` values such as
-`found`, `not_found`, and `error`.
-
-In this example, user `404` is intentionally loaded twice. Because a `found=false` loader result is not stored by
-`pacecache`, both lookups reach the repository and are reported as misses with `not_found` load results.
-
-Because the example is short-lived, it calls `ForceFlush` before exiting. Long-running applications normally export
-metrics periodically through the configured OpenTelemetry metric reader.
+Because this example is short-lived, it calls `ForceFlush` before exiting to flush pending telemetry. Long-running
+applications normally rely on their configured OpenTelemetry metric reader to collect and export metrics continuously.

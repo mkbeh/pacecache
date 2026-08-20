@@ -1,18 +1,17 @@
 # pacecache
 
-[//]: # (<img align="right" width="300" src="https://github.com/user-attachments/assets/1be9337c-2a56-44ed-9754-579933f1b4e7" alt="pacecache">)
-<img align="right" width="300" src="tmp/assets/logo_v12.webp" alt="pacecache">
+<img align="right" width="300" src="https://github.com/user-attachments/assets/0d80da22-bd60-4abd-b9e6-42838f39261c" alt="pacecache">
 
 **Fast and concurrent in-memory cache for Go**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/mkbeh/xredis.svg)](https://pkg.go.dev/github.com/mkbeh/xredis)
-[![Go](https://github.com/mkbeh/xredis/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/mkbeh/xredis/actions/workflows/go.yml)
-[![codecov](https://codecov.io/gh/mkbeh/xredis/branch/main/graph/badge.svg)](https://codecov.io/gh/mkbeh/xredis)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mkbeh/pacecache.svg)](https://pkg.go.dev/github.com/mkbeh/pacecache)
+[![Test](https://github.com/mkbeh/pacecache/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mkbeh/pacecache/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/mkbeh/pacecache/branch/main/graph/badge.svg)](https://codecov.io/gh/mkbeh/pacecache)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
 
-`pacecache` is a bounded, generic in-process Go cache for highly concurrent workloads. It combines segmented storage,
-LRU eviction, flexible expiration, cache-aside loading, negative caching, and optional observability while keeping
-common hot paths allocation-free.
+`pacecache` is a bounded, generic in-process cache for Go, built for highly concurrent workloads. It combines segmented
+LRU storage, flexible expiration, cache-aside loading, and optional observability while keeping resident hot paths
+allocation-free.
 
 The library provides an intuitive API with predictable behavior under high concurrency and contention.
 
@@ -22,15 +21,13 @@ The library provides an intuitive API with predictable behavior under high concu
 
 * **Built for Concurrency:** Uses segmented storage to minimize lock contention under heavy load.
 * **Bounded LRU Eviction:** Enforces exact LRU eviction within each segment with configurable cache capacity.
-* **Flexible Expiration:** Supports default and per-entry TTLs, `NoExpiration`, jitter, sliding expiration, and explicit
-  TTL refreshes.
-* **Cache-Aside Loading:** Coalesces concurrent misses for the same key via `GetOrLoad` to prevent cache stampedes.
-* **Negative Caching:** Caches "not-found" results independently to protect upstream data sources from repeated misses.
+* **Flexible Expiration:** Supports cache-level and per-entry TTLs, jitter, sliding expiration, explicit TTL refreshes,
+  and entries without time-based expiration.
+* **Cache-Aside Loading:** Coalesces concurrent misses for the same key to prevent cache stampedes.
 * **Concurrency-Safe Updates:** Prevents stale in-flight loads from overwriting newer cache state.
-* **Expiration Cleanup:** Supports lazy expiration, explicit cleanup, and an optional background cleanup worker.*
-  **Decoupled Observability:** Provides built-in statistics and optional OpenTelemetry metrics without coupling the core
-  package to OpenTelemetry.
-* **Allocation-Free Hot Paths:** Avoids per-operation allocations for common reads, updates, and expiration operations.
+* **Expiration Cleanup:** Supports lazy expiration, explicit cleanup, and an optional background cleanup worker.
+* **Observability:** Provides built-in statistics and optional OpenTelemetry metrics for monitoring cache behavior.
+* **Allocation-Free Hot Paths:** Avoids per-operation allocations for common cache hits, misses, and updates.
 
 ## Installation
 
@@ -48,232 +45,226 @@ go get github.com/mkbeh/pacecache/extra/paceotel
 
 ## Usage
 
-Create a cache by choosing its capacity and expiration policy. A cache has a logical name used by diagnostics and
-metrics.
+Create a cache with `pacecache.New` and close it when it is no longer needed:
 
+<!-- @formatter:off -->
 ```go
-users, err := pacecache.New[int64, User](
-"users",
-pacecache.WithMaxEntries(100_000),
-pacecache.WithTTL(5*time.Minute),
-pacecache.WithNegativeTTL(30*time.Second),
-pacecache.WithJitter(30*time.Second),
-)
+cache, err := pacecache.New[string, string]("cache")
 if err != nil {
-return err
+    panic(err)
 }
-defer users.Close()
+defer cache.Close()
 ```
+<!-- @formatter:on -->
 
-`WithTTL` defines the default lifetime of positive entries. Negative results use their own TTL, while jitter spreads
-positive expiration deadlines to avoid many entries expiring at the same instant.
+Entries do not expire by default. Use `WithTTL` to set the default expiration and `WithJitter` to spread expiration
+deadlines and reduce synchronized expiration bursts. Individual entries can use the default TTL, a custom TTL, or
+`NoExpiration`.
 
-Values can be written directly using the cache default TTL, a custom TTL, or no time-based expiration:
-
+<!-- @formatter:off -->
 ```go
-// Use the cache-level TTL.
-users.Set(42, user, pacecache.DefaultExpiration)
-
-// Override the TTL for this entry.
-users.Set(100, user, 30*time.Second)
-
-// Keep the entry until it is evicted or invalidated.
-users.Set(200, user, pacecache.NoExpiration)
-```
-
-A local lookup distinguishes between a positive hit, a cached negative result, and a regular miss:
-
-```go
-user, status := users.Get(42)
-
-switch status {
-case pacecache.LookupHit:
-fmt.Println("cache hit:", user.Name)
-
-case pacecache.LookupNegativeHit:
-fmt.Println("user is known to be absent")
-
-case pacecache.LookupMiss:
-fmt.Println("user is not cached")
-}
-```
-
-This distinction is useful when negative caching is enabled: a cached "not found" result is different from a key that
-has never been loaded or has already expired.
-
-If only the presence of a live positive entry matters, use `Exists`:
-
-```go
-if users.Exists(42) {
-// A live positive entry exists.
-}
-```
-
-### Cache-aside loading
-
-For most application caches, `GetOrLoad` is the primary read path. It checks the cache first and invokes the loader only
-when no live cached result exists.
-
-A typical repository-backed lookup can be written as:
-
-```go
-func getUser(ctx context.Context, id int64) (User, bool, error) {
-return users.GetOrLoad(
-ctx,
-id,
-func(ctx context.Context) (User, bool, error) {
-user, err := userRepository.FindByID(ctx, id)
-if errors.Is(err, sql.ErrNoRows) {
-// A successful not-found result can be negatively cached.
-return User{}, false, nil
-}
-if err != nil {
-// Loader errors are returned and are never cached.
-return User{}, false, err
-}
-
-return user, true, nil
-},
+cache, _ := pacecache.New[string, string](
+    "cache",
+    pacecache.WithTTL(5*time.Minute),
+    pacecache.WithJitter(30*time.Second),
 )
-}
+defer cache.Close()
 ```
+<!-- @formatter:on -->
 
-The returned `found` value describes whether the underlying value exists:
+Values can be stored, retrieved, checked, conditionally inserted, and invalidated:
 
+<!-- @formatter:off -->
 ```go
-user, found, err := getUser(ctx, 42)
-if err != nil {
-return err
-}
-if !found {
-return ErrUserNotFound
-}
+// Store values with different expiration strategies.
+cache.Set("key1", "value1", pacecache.DefaultExpiration) // cache-level TTL
+cache.Set("key2", "value2", pacecache.NoExpiration)      // no expiration
+cache.Set("key3", "value3", 30*time.Second)              // custom TTL
 
-fmt.Println(user.Name)
+// Read a live value.
+value, found := cache.Get("key1")
+
+// Read a value together with its expiration metadata.
+entry, found := cache.GetEntry("key1")
+
+// Check existence without updating LRU or TTL.
+exists := cache.Exists("key2")
+
+// Atomically return an existing value or store a new one.
+value, found = cache.GetOrSet("key4", "value4", pacecache.DefaultExpiration)
+entry, found = cache.GetOrSetEntry("key5", "value5", 30*time.Second)
+
+// Invalidate cached values.
+value, found = cache.GetAndInvalidate("key3") // read and invalidate atomically
+cache.Invalidate("key1")                      // invalidate one key
+cache.Invalidate("key2", "key4")              // invalidate multiple keys
+cache.InvalidateAll()                         // clear the cache
 ```
+<!-- @formatter:on -->
 
-Concurrent misses for the same key are coalesced into one loader execution. Other callers wait for the shared result
-instead of issuing duplicate requests to the database or upstream service.
+`GetOrLoad` can lazily load values on cache misses. The loader runs only when no live entry exists, and successful
+results are stored using the cache's default expiration:
 
-When `WithNegativeTTL` is configured, a loader result with `found=false` and `err=nil` is cached independently. This
-prevents repeated requests for known-missing data from reaching the upstream system.
-
-> [!NOTE]
-> `Set` and invalidation act as publication barriers. An older in-flight load cannot overwrite cache state written or
-invalidated after that load started.
-
-### Expiration
-
-Per-entry expiration can be combined with cache-level policies.
-
-For workloads where frequently accessed entries should stay alive, enable sliding expiration:
-
+<!-- @formatter:off -->
 ```go
-sessions, err := pacecache.New[string, Session](
-"sessions",
-pacecache.WithMaxEntries(50_000),
-pacecache.WithTTL(30*time.Minute),
-pacecache.WithSlidingExpiration(),
-pacecache.WithJitter(2*time.Minute),
+// Define a loader that fetches the value from an upstream source.
+loader := pacecache.Loader[string](
+    func(ctx context.Context) (string, bool, error) {
+        // Load from a database, file, or remote service.
+        return "loaded value", true, nil
+    },
 )
+
+// Return the cached value or invoke the loader on a miss.
+value, found, err := cache.GetOrLoad(ctx, "key", loader)
 if err != nil {
-return err
-}
-defer sessions.Close()
-```
-
-A successful positive `Get` now refreshes the entry expiration:
-
-```go
-session, status := sessions.Get(sessionID)
-if status != pacecache.LookupHit {
-return ErrSessionNotFound
+    log.Printf("failed to load key: %v", err)
+    return
 }
 
-return session
-```
-
-Expiration can also be refreshed explicitly without enabling sliding expiration:
-
-```go
-if !sessions.RefreshTTL(sessionID) {
-// The entry is missing, expired, or negatively cached.
+if found {
+    fmt.Println("retrieved value:", value)
 }
 ```
+<!-- @formatter:on -->
 
-`NoExpiration` entries do not expire by time, while negative entries are not refreshed by sliding expiration.
+Missing results and loader errors are returned without being cached. Concurrent misses for the same key share a single
+loader execution, avoiding duplicate requests to the upstream source.
 
-### Invalidation
+Expired entries are never returned and are removed lazily when encountered. Periodic background cleanup can be enabled
+for entries that may remain untouched, or expired entries can be reclaimed explicitly when needed.
 
-Remove specific entries when their source data changes:
-
+<!-- @formatter:off -->
 ```go
-users.Invalidate(42)
-```
-
-Multiple keys can be invalidated in one call:
-
-```go
-users.Invalidate(42, 100, 200)
-```
-
-Or clear the entire cache:
-
-```go
-users.InvalidateAll()
-```
-
-Invalidation does not need to cancel an already running loader. The loader may still return its result to callers
-already waiting for it, but that stale result cannot repopulate the invalidated cache entry.
-
-### Expiration cleanup
-
-Expiration correctness does not depend on a background worker. Once an entry expires, it is never returned even if its
-storage has not yet been reclaimed.
-
-Expired entries are removed lazily as they are encountered and can also be reclaimed manually:
-
-```go
-removed := users.CleanupExpired()
-
-log.Printf("removed %d expired entries", removed)
-```
-
-For caches with a large working set or entries that may expire without being accessed again, periodic cleanup can be
-enabled:
-
-```go
-users, err := pacecache.New[int64, User](
-"users",
-pacecache.WithMaxEntries(100_000),
-pacecache.WithTTL(5*time.Minute),
-pacecache.WithCleanupInterval(time.Minute),
+cache, _ := pacecache.New[string, string](
+    "cache",
+    pacecache.WithTTL(5*time.Minute),
+    pacecache.WithCleanupInterval(time.Minute), // background cleanup
 )
-if err != nil {
-return err
-}
-defer users.Close()
+defer cache.Close()
+
+// Or reclaim expired entries explicitly.
+cache.CleanupExpired()
+```
+<!-- @formatter:on -->
+
+Background cleanup is optional. `Close` stops the cleanup worker and waits for it to exit.
+
+## Concurrency semantics
+
+The cache coordinates concurrent loads and mutations to prevent duplicate upstream work and stale values from
+overwriting newer cache state. The flow below shows how a shared in-flight load is handled when the cache is mutated
+before the loader completes:
+
+```mermaid
+flowchart LR
+    Request["Concurrent same-key GetOrLoad calls"]
+    Miss["Cache miss"]
+    Load["Single shared loader"]
+    Check{"Cache changed<br/>while loading?"}
+    Store["Store loaded value"]
+    Reject["Reject stale result"]
+    Request --> Miss
+    Miss --> Load
+    Load --> Check
+    Check -->|No| Store
+    Check -->|Yes| Reject
 ```
 
-Background cleanup is opt-in. `Close` stops the cleanup worker and releases any other background resources associated
-with the cache.
+Concurrent misses for the same key share a single loader execution, while different keys are loaded independently. If
+the cache is mutated while a load is in flight, the newer mutation takes precedence. The stale loaded value is discarded
+instead of overwriting the newer cache state, and the loading call returns an error.
 
-### Statistics
+Callers waiting for a shared load can stop waiting through their own `context.Context` without blocking other waiting
+callers.
 
-`Stats` returns a snapshot of the cache state and activity:
+## Observability
 
+The cache provides built-in runtime statistics and optional OpenTelemetry metrics for monitoring cache behavior.
+
+`Stats` returns a snapshot of the current cache state and cumulative activity:
+
+<!-- @formatter:off -->
 ```go
-stats := users.Stats()
+// Retrieve a snapshot of the current cache state and activity.
+stats := cache.Stats()
 
-log.Printf(
-"entries=%d hits=%d negative_hits=%d misses=%d evictions=%d",
-stats.EntryCount,
-stats.HitCount,
-stats.NegativeHitCount,
-stats.MissCount,
-stats.EvictionCount,
-)
+// Selected statistics available in the snapshot.
+_ = stats.EntryCount      // Current live entries
+_ = stats.MaxEntries      // Configured maximum capacity
+_ = stats.HitCount        // Cache hits
+_ = stats.MissCount       // Cache misses
+_ = stats.EvictionCount   // LRU evictions
+_ = stats.ExpirationCount // Expired entries removed
+_ = stats.LoadErrorCount  // Loader errors
 ```
+<!-- @formatter:on -->
 
-Statistics also include loader outcomes, shared loads, invalidations, and expirations, and can be exported through the
-optional OpenTelemetry integration.
+Statistics also include load outcomes, shared and superseded loads, invalidations, cleanup activity, and segment count.
+
+Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel). OpenTelemetry configuration and
+exporter selection remain application concerns, so Prometheus, OTLP, and other exporters can be used without changing
+the cache integration.
+
+For a complete setup, see the [example](./examples/otel).
+
+## Performance
+
+The benchmark suite evaluates concurrent throughput, cache hit ratio, and memory consumption under representative cache
+workloads.
+
+Benchmarks were run on an Intel Core i7-12700H (14 cores, 20 threads).
+
+---
+
+### Throughput
+
+Measures concurrent read/write throughput using a pre-generated Scrambled Zipfian access pattern to create skewed key
+access and hot-key contention.
+
+* **Concurrency:** 8 parallel workers
+* **Segments:** 512
+* **Maximum entries:** 10K, 100K, and 1M
+* **Write ratios:** 0%, 25%, 50%, 75%, and 100%
+* **Expiration:** Disabled
+
+![Throughput](./benchmarks/performance/throughput/assets/throughput.png)
+
+---
+
+### Hit Ratio
+
+Measures how cache capacity affects hit ratio under a Zipfian access pattern.
+
+* **Requests:** 1,000,000
+* **Segments:** 32
+* **Capacity:** 500 to 80K entries
+* **Expiration:** Disabled to isolate capacity and eviction behavior
+
+![Hit Ratio](./benchmarks/performance/hitratio/assets/hit-ratio.png)
+
+---
+
+### Memory Consumption
+
+Measures live heap consumption after populating the cache with fixed-size keys and values.
+
+* **Data:** Fixed 32-byte keys and 32-byte values
+* **Segments:** 32
+* **Capacity:** 1K to 1M entries
+* **Expiration:** 1-hour TTL
+
+![Memory Consumption](./benchmarks/performance/memory/assets/memory.png)
+
+---
+
+For the complete methodology, source code, and execution instructions, see the
+[performance benchmarks](./benchmarks/performance).
+
+## Examples
+
+See the [examples](./examples) directory for runnable examples demonstrating how to use `pacecache`.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
