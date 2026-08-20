@@ -17,7 +17,7 @@ import (
 // the same storage segment.
 type cacheState[K comparable, V any] struct {
 	mu    sync.RWMutex
-	group *singleflight.Group[K, loadResult[V]]
+	group singleflight.Group[K, loadResult[V]]
 }
 
 // GetOrLoad returns the cached value for key or obtains it from loader.
@@ -30,12 +30,15 @@ type cacheState[K comparable, V any] struct {
 // context of the caller that starts the shared load. Other callers may stop
 // waiting independently when their own contexts are canceled.
 //
-// Set, a GetOrSet or GetOrSetEntry insertion, and invalidation act as publication barriers for
-// the same key. If a successful loader result is superseded by a newer cache
-// mutation before publication, GetOrLoad discards the loader result and returns
-// ErrLoadSuperseded. Loader errors take precedence over
-// ErrLoadSuperseded. Mutations of other keys do not affect the load, even when
-// those keys share the same segment.
+// Set, GetOrSet and GetOrSetEntry insertions, and invalidation act as
+// publication barriers for the same key. If a successful loader result is
+// superseded by a newer cache mutation before publication, GetOrLoad discards
+// the loader result and returns ErrLoadSuperseded. Loader errors take precedence
+// over ErrLoadSuperseded. Mutations of other keys do not affect the load, even
+// when those keys share the same segment.
+//
+// A loader must not call GetOrLoad or GetOrLoadEntry recursively for the same
+// key, because the nested call would wait for the load already in progress.
 //
 // When err is non-nil, the returned value is the zero value of V and found is
 // false.
@@ -54,7 +57,7 @@ func (cache *Cache[K, V]) GetOrLoad(
 	return result.value, result.found, nil
 }
 
-// GetOrLoadEntry returns an immutable cache entry snapshot for key or obtains
+// GetOrLoadEntry returns a read-only cache entry snapshot for key or obtains
 // the value from loader and publishes it before returning the snapshot.
 //
 // A loader result with found=false is not cached and returns the zero Entry with
@@ -160,20 +163,16 @@ func (cache *Cache[K, V]) getOrLoad(
 				value = zero
 			}
 
-			var (
-				deadline   int64
-				refreshTTL time.Duration
-			)
-
-			if found {
-				refreshTTL = cache.effectiveExpirationTTL(DefaultExpiration)
-				deadline = deadlineAfter(finishedAt, refreshTTL)
+			loaded := loadResult[V]{
+				value: value,
+				found: found,
 			}
 
-			loaded := loadResult[V]{
-				value:    value,
-				deadline: deadline,
-				found:    found,
+			var refreshTTL time.Duration
+
+			if found {
+				refreshTTL = cache.effectiveTTL(DefaultExpiration)
+				loaded.deadline = deadlineAfter(finishedAt, refreshTTL)
 			}
 
 			// Publication is ordered with cache mutations. A mutation that
@@ -189,7 +188,9 @@ func (cache *Cache[K, V]) getOrLoad(
 				return loadResult[V]{}, ErrLoadSuperseded
 			}
 
-			cache.storeLoaded(index, key, loaded, refreshTTL)
+			if loaded.found {
+				cache.store.setAt(index, key, loaded.value, refreshTTL, loaded.deadline, stats)
+			}
 
 			state.mu.RUnlock()
 
@@ -207,39 +208,10 @@ func (cache *Cache[K, V]) getOrLoad(
 	if result.Shared {
 		cache.stats.recordShared(index)
 	}
+
 	if result.Err != nil {
 		return loadResult[V]{}, result.Err
 	}
 
 	return result.Val, nil
-}
-
-func (cache *Cache[K, V]) storeLoaded(
-	index int,
-	key K,
-	loaded loadResult[V],
-	refreshTTL time.Duration,
-) {
-	if !loaded.found {
-		return
-	}
-
-	cache.store.setAt(
-		index,
-		key,
-		loaded.value,
-		refreshTTL,
-		loaded.deadline,
-		cache.stats.segment(index),
-	)
-}
-
-func newCacheStates[K comparable, V any](count int) []cacheState[K, V] {
-	states := make([]cacheState[K, V], count)
-
-	for index := range states {
-		states[index].group = &singleflight.Group[K, loadResult[V]]{}
-	}
-
-	return states
 }

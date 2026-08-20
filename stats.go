@@ -50,8 +50,8 @@ type Stats struct {
 
 	// LoadSupersededCount is the cumulative number of successful actual loader
 	// invocations whose result was discarded because a newer cache mutation,
-	// such as Set, a GetOrSet or GetOrSetEntry insertion, Invalidate, or InvalidateAll, won before
-	// publication.
+	// such as Set, GetOrSet and GetOrSetEntry insertions, Invalidate, or
+	// InvalidateAll, won before publication.
 	//
 	// Superseded loads are still included in LoadFoundCount or LoadNotFoundCount,
 	// according to the loader result, and are not included in LoadErrorCount.
@@ -161,27 +161,27 @@ func (cache *Cache[K, V]) Stats() Stats {
 
 	for index := range cache.store.segments {
 		segment := &cache.store.segments[index]
-		shard := cache.stats.segment(index)
+		counters := cache.stats.segment(index)
 
 		// Storage counters share the storage segment mutex with the operations
 		// that update them.
 		segment.mu.Lock()
 
 		snapshot.EntryCount += int64(len(segment.entries))
-		snapshot.HitCount += shard.hitCount
-		snapshot.MissCount += shard.missCount
-		snapshot.EvictionCount += shard.evictionCount
-		snapshot.ExpirationCount += shard.expirationCount
+		snapshot.HitCount += counters.hitCount
+		snapshot.MissCount += counters.missCount
+		snapshot.EvictionCount += counters.evictionCount
+		snapshot.ExpirationCount += counters.expirationCount
 
 		segment.mu.Unlock()
 
-		snapshot.LoadFoundCount += shard.loadFoundCount.Load()
-		snapshot.LoadNotFoundCount += shard.loadNotFoundCount.Load()
-		snapshot.LoadErrorCount += shard.loadErrorCount.Load()
-		snapshot.LoadSupersededCount += shard.loadSupersededCount.Load()
-		snapshot.LoadDuration += time.Duration(shard.loadDurationNanos.Load())
-		snapshot.SharedCount += shard.sharedCount.Load()
-		snapshot.InvalidatedKeyCount += shard.invalidatedKeyCount.Load()
+		snapshot.LoadFoundCount += counters.loadFoundCount.Load()
+		snapshot.LoadNotFoundCount += counters.loadNotFoundCount.Load()
+		snapshot.LoadErrorCount += counters.loadErrorCount.Load()
+		snapshot.LoadSupersededCount += counters.loadSupersededCount.Load()
+		snapshot.LoadDuration += time.Duration(counters.loadDurationNanos.Load())
+		snapshot.SharedCount += counters.sharedCount.Load()
+		snapshot.InvalidatedKeyCount += counters.invalidatedKeyCount.Load()
 	}
 
 	return snapshot

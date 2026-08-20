@@ -13,7 +13,7 @@ capacities = [
     80_000,
 ]
 
-segments = 32
+segments = 1
 
 limit = 1_000_000
 

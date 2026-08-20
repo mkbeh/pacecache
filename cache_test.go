@@ -92,22 +92,22 @@ func TestCloseIsIdempotentAndCacheRemainsUsable(t *testing.T) {
 	}
 }
 
-func TestEffectiveExpirationTTLAndDeadlineHelpers(t *testing.T) {
+func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
 	cache := &Cache[string, int]{ttl: 10 * time.Second}
 
-	if got := cache.effectiveExpirationTTL(DefaultExpiration); got != 10*time.Second {
+	if got := cache.effectiveTTL(DefaultExpiration); got != 10*time.Second {
 		t.Fatalf("default effective TTL = %v, want 10s", got)
 	}
-	if got := cache.effectiveExpirationTTL(3 * time.Second); got != 3*time.Second {
+	if got := cache.effectiveTTL(3 * time.Second); got != 3*time.Second {
 		t.Fatalf("custom effective TTL = %v, want 3s", got)
 	}
-	if got := cache.effectiveExpirationTTL(NoExpiration); got != 0 {
+	if got := cache.effectiveTTL(NoExpiration); got != 0 {
 		t.Fatalf("NoExpiration effective TTL = %v, want 0", got)
 	}
 
 	cache.jitter = time.Second
 	for range 100 {
-		got := cache.effectiveExpirationTTL(5 * time.Second)
+		got := cache.effectiveTTL(5 * time.Second)
 		if got < 5*time.Second || got >= 6*time.Second {
 			t.Fatalf("jittered TTL = %v, want [5s,6s)", got)
 		}
@@ -148,7 +148,7 @@ func TestNewWrapsConfigurationError(t *testing.T) {
 	if cache != nil {
 		t.Fatal("cache must be nil for invalid configuration")
 	}
-	if err == nil || err.Error() != "pacecache: invalid configuration: cache name must not be blank" {
+	if err == nil || err.Error() != "pacecache: invalid configuration: cache name must not be empty" {
 		t.Fatalf("New() error = %v", err)
 	}
 }

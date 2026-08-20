@@ -19,7 +19,7 @@ The library provides an intuitive API with predictable behavior under high concu
 
 ## Features
 
-* **Built for Concurrency:** Uses segmented storage to minimize lock contention under heavy load.
+* **Built for Concurrency:** Supports configurable segmented storage to reduce lock contention under heavy load.
 * **Bounded LRU Eviction:** Enforces exact LRU eviction within each segment with configurable cache capacity.
 * **Flexible Expiration:** Supports cache-level and per-entry TTLs, jitter, sliding expiration, explicit TTL refreshes,
   and entries without time-based expiration.
@@ -56,6 +56,9 @@ if err != nil {
 defer cache.Close()
 ```
 <!-- @formatter:on -->
+
+Caches use a single storage segment by default. For highly concurrent workloads, use `WithSegmentCount` and benchmark
+segment counts against the application's actual access pattern.
 
 Entries do not expire by default. Use `WithTTL` to set the default expiration and `WithJitter` to spread expiration
 deadlines and reduce synchronized expiration bursts. Individual entries can use the default TTL, a custom TTL, or

@@ -482,24 +482,45 @@ func TestZeroValueCacheGetAndInvalidate(t *testing.T) {
 }
 
 func TestInvalidateMultipleKeysAndDuplicates(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(64), WithSegmentCount(4))
-	cache.Set("a", 1, NoExpiration)
-	cache.Set("b", 2, NoExpiration)
-	cache.Set("c", 3, NoExpiration)
+	tests := []struct {
+		name    string
+		options []Option
+	}{
+		{
+			name:    "single_segment",
+			options: []Option{WithMaxEntries(64)},
+		},
+		{
+			name: "multiple_segments",
+			options: []Option{
+				WithMaxEntries(64),
+				WithSegmentCount(4),
+			},
+		},
+	}
 
-	cache.Invalidate("a", "b", "a", "missing")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cache := mustNewCache[int](t, "users", test.options...)
+			cache.Set("a", 1, NoExpiration)
+			cache.Set("b", 2, NoExpiration)
+			cache.Set("c", 3, NoExpiration)
 
-	if _, found := cache.Get("a"); found {
-		t.Fatal("a remains cached")
-	}
-	if _, found := cache.Get("b"); found {
-		t.Fatal("b remains cached")
-	}
-	if value, found := cache.Get("c"); value != 3 || !found {
-		t.Fatalf("c = (%d, %t), want retained hit", value, found)
-	}
-	if got := cache.Stats().InvalidatedKeyCount; got != 2 {
-		t.Fatalf("InvalidatedKeyCount = %d, want 2", got)
+			cache.Invalidate("a", "b", "a", "missing")
+
+			if _, found := cache.Get("a"); found {
+				t.Fatal("a remains cached")
+			}
+			if _, found := cache.Get("b"); found {
+				t.Fatal("b remains cached")
+			}
+			if value, found := cache.Get("c"); value != 3 || !found {
+				t.Fatalf("c = (%d, %t), want retained hit", value, found)
+			}
+			if got := cache.Stats().InvalidatedKeyCount; got != 2 {
+				t.Fatalf("InvalidatedKeyCount = %d, want 2", got)
+			}
+		})
 	}
 }
 
@@ -562,7 +583,7 @@ func TestCacheCleanupExpired(t *testing.T) {
 	cache := &Cache[string, int]{
 		name:   "test",
 		store:  store,
-		states: newCacheStates[string, int](1),
+		states: make([]cacheState[string, int], 1),
 		stats:  newStatsCollector(1),
 		cleanupPolicy: cleanupPolicy{
 			batchSize:   defaultCleanupBatchSize,

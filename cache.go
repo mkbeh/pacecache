@@ -17,9 +17,9 @@ const (
 
 // Cache is a bounded in-process cache for keys of type K and values of type V.
 //
-// Cache uses segmented exact LRU eviction and TTL expiration. Entries may
-// optionally use sliding expiration. GetOrLoad and GetOrLoadEntry provide
-// cache-aside loading and coalesce concurrent loads for the same key.
+// Cache uses exact LRU eviction within each storage segment and TTL expiration.
+// Entries may optionally use sliding expiration. GetOrLoad and GetOrLoadEntry
+// provide cache-aside loading and coalesce concurrent loads for the same key.
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[K comparable, V any] struct {
@@ -41,11 +41,11 @@ type Cache[K comparable, V any] struct {
 
 // New creates a Cache with the given logical name.
 //
-// Name is used by diagnostics and metrics and must not be blank.
+// Name is used by diagnostics and metrics and must not be empty.
 //
-// Unless overridden by options, New uses production-oriented defaults for
-// capacity, segmentation, and TTL. Metrics and background cleanup are disabled
-// by default.
+// Unless overridden by options, New uses the default cache capacity, a single
+// storage segment, and no time-based expiration. Metrics and background cleanup
+// are disabled by default.
 //
 // If metrics or background cleanup are configured, Close must be called to
 // release the associated resources.
@@ -70,7 +70,7 @@ func New[K comparable, V any](name string, options ...Option) (*Cache[K, V], err
 		name: settings.name,
 
 		store:  store,
-		states: newCacheStates[K, V](len(store.segments)),
+		states: make([]cacheState[K, V], len(store.segments)),
 		stats:  newStatsCollector(len(store.segments)),
 
 		cleanupPolicy: policy,
@@ -119,20 +119,18 @@ func (cache *Cache[K, V]) Close() {
 		return
 	}
 
-	cache.closeOnce.Do(
-		func() {
-			if cache.cleanup != nil {
-				cache.cleanup.close()
-			}
+	cache.closeOnce.Do(func() {
+		if cache.cleanup != nil {
+			cache.cleanup.close()
+		}
 
-			if cache.metrics != nil {
-				cache.metrics.Close()
-			}
-		},
-	)
+		if cache.metrics != nil {
+			cache.metrics.Close()
+		}
+	})
 }
 
-func (cache *Cache[K, V]) effectiveExpirationTTL(expiration time.Duration) time.Duration {
+func (cache *Cache[K, V]) effectiveTTL(expiration time.Duration) time.Duration {
 	ttl := expiration
 
 	if ttl == DefaultExpiration {

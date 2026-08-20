@@ -337,18 +337,6 @@ func TestGetOrLoadWaiterCanCancelWithoutCancelingSharedLoad(t *testing.T) {
 	}
 }
 
-func TestNewCacheStatesInitializesSingleflightGroups(t *testing.T) {
-	states := newCacheStates[string, int](4)
-	if len(states) != 4 {
-		t.Fatalf("len(states) = %d, want 4", len(states))
-	}
-	for index := range states {
-		if states[index].group == nil {
-			t.Fatalf("states[%d].group is nil", index)
-		}
-	}
-}
-
 func TestGetOrLoadAndGetOrLoadEntryShareOneWave(t *testing.T) {
 	cache := mustNewCache[int](
 		t,

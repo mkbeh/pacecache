@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const defaultStorageSegmentCount = 32
+const defaultStorageSegmentCount = 1
 
 // storage routes keys across independent storage segments.
 //
@@ -204,14 +204,7 @@ func (storage *storage[K, V]) getOrSetAt(
 	now int64,
 	stats *segmentStats,
 ) (V, bool) {
-	return storage.segments[index].getOrSet(
-		key,
-		value,
-		refreshTTL,
-		deadline,
-		now,
-		stats,
-	)
+	return storage.segments[index].getOrSet(key, value, refreshTTL, deadline, now, stats)
 }
 
 func (storage *storage[K, V]) getOrSetEntryAt(
@@ -223,14 +216,7 @@ func (storage *storage[K, V]) getOrSetEntryAt(
 	now int64,
 	stats *segmentStats,
 ) (cachedEntry[V], bool) {
-	return storage.segments[index].getOrSetEntry(
-		key,
-		value,
-		refreshTTL,
-		deadline,
-		now,
-		stats,
-	)
+	return storage.segments[index].getOrSetEntry(key, value, refreshTTL, deadline, now, stats)
 }
 
 func (storage *storage[K, V]) getAndDeleteAt(
@@ -287,13 +273,7 @@ func (storage *storage[K, V]) cleanupExpired(
 			}
 
 			batchLimit := min(policy.batchSize, remainingEntries)
-
-			count, pending := storage.cleanupExpiredAt(
-				index,
-				now,
-				batchLimit,
-				stats.segment(index),
-			)
+			count, pending := storage.cleanupExpiredAt(index, now, batchLimit, stats.segment(index))
 
 			removed += int64(count)
 			remainingEntries -= count

@@ -7,10 +7,10 @@ type StatsProvider interface {
 	Stats() Stats
 }
 
-// Metrics registers observability for a Cache.
+// Metrics registers metrics for a Cache.
 //
-// Implementations are expected to be immutable and safe to reuse for multiple
-// caches.
+// Implementations must be safe to reuse across multiple caches. RegisterCache
+// may be called concurrently.
 //
 // If RegisterCache returns an error, the implementation must release any
 // resources created during the registration attempt.

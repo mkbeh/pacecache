@@ -13,8 +13,8 @@ func TestDefaultCacheSettings(t *testing.T) {
 	if settings.maxEntries != defaultMaxEntries {
 		t.Fatalf("maxEntries = %d, want %d", settings.maxEntries, defaultMaxEntries)
 	}
-	if settings.segmentCount != defaultStorageSegmentCount {
-		t.Fatalf("segmentCount = %d, want %d", settings.segmentCount, defaultStorageSegmentCount)
+	if settings.segmentCount != 1 {
+		t.Fatalf("segmentCount = %d, want 1", settings.segmentCount)
 	}
 	if settings.ttl != defaultTTL {
 		t.Fatalf("ttl = %v, want %v", settings.ttl, defaultTTL)
@@ -93,7 +93,7 @@ func TestCacheSettingsValidation(t *testing.T) {
 		options []Option
 		want    string
 	}{
-		{name: "blank name", cache: "", want: "cache name must not be blank"},
+		{name: "empty name", cache: "", want: "cache name must not be empty"},
 		{name: "max entries zero", cache: "users", options: []Option{WithMaxEntries(0)}, want: "max entries must be positive"},
 		{name: "max entries negative", cache: "users", options: []Option{WithMaxEntries(-1)}, want: "max entries must be positive"},
 		{name: "segment count zero", cache: "users", options: []Option{WithSegmentCount(0)}, want: "segment count must be positive"},
@@ -150,7 +150,6 @@ func TestCacheSettingsAcceptsBoundaryValues(t *testing.T) {
 	settings, err := newCacheSettings(
 		"users",
 		WithMaxEntries(1),
-		WithSegmentCount(1),
 		WithTTL(NoExpiration),
 		WithJitter(maxDuration),
 		WithMetrics(nil),

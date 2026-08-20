@@ -46,7 +46,7 @@ The simulator measures how cache capacity affects the hit ratio under a Zipfian 
 ### Configuration
 
 * Accesses: 1,000,000
-* Segments: 32
+* Segments: 1
 * Capacities: 500, 1K, 2K, 5K, 10K, 20K, 40K, and 80K entries
 * Expiration: Disabled to isolate capacity and eviction behavior
 
@@ -66,7 +66,7 @@ This benchmark measures live heap consumption after populating the cache with fi
 
 ### Configuration
 
-* Segments: 32
+* Segments: 1
 * Data: Fixed 32-byte keys and 32-byte values
 * Capacities: 1K, 10K, 25K, 100K, and 1M entries
 * Workload: 10 reads and a 5µs settle delay after each insertion
@@ -90,7 +90,7 @@ can generate the corresponding charts independently:
 go run ./benchmarks/performance/throughput/charts
 go run ./benchmarks/performance/hitratio/charts
 go run ./benchmarks/performance/memory/charts
-````
+```
 
 These commands generate visual artifacts at the following locations:
 

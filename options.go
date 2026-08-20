@@ -66,8 +66,10 @@ func defaultCacheSettings() *cacheSettings {
 
 // WithMaxEntries configures the total cache entry budget.
 //
-// The budget is distributed across cache segments. Actual resident capacity
-// may be slightly lower because each segment enforces its own local budget.
+// With one segment, the full budget is shared by the cache. When multiple
+// segments are configured, the budget is distributed across them and effective
+// capacity utilization may be slightly lower because each segment enforces its
+// own local budget.
 func WithMaxEntries(maxEntries int) Option {
 	return func(settings *cacheSettings) error {
 		if maxEntries <= 0 {
@@ -82,9 +84,10 @@ func WithMaxEntries(maxEntries int) Option {
 
 // WithSegmentCount configures the number of independent cache segments.
 //
-// More segments can reduce lock contention under concurrent access but may
-// reduce effective capacity utilization because each segment has its own
-// entry budget.
+// The default is one segment. More segments can reduce lock contention under
+// concurrent access but may reduce effective capacity utilization because each
+// segment has its own entry budget. Benchmark segment counts against the
+// application's actual workload.
 func WithSegmentCount(count int) Option {
 	return func(settings *cacheSettings) error {
 		if count <= 0 {
@@ -115,10 +118,10 @@ func WithTTL(ttl time.Duration) Option {
 
 // WithJitter configures random TTL spread.
 //
-// Jitter is selected when an expiring entry is stored to reduce synchronized
-// expiration. With sliding expiration, the resulting effective TTL is reused
-// on every refresh instead of selecting another jitter value. Zero disables
-// jitter.
+// Jitter adds a random duration smaller than the configured value when an
+// expiring entry is stored, reducing synchronized expiration. With sliding
+// expiration, the resulting effective TTL is reused on every refresh instead of
+// selecting another jitter value. Zero disables jitter.
 func WithJitter(jitter time.Duration) Option {
 	return func(settings *cacheSettings) error {
 		if jitter < 0 {
@@ -226,7 +229,7 @@ func WithMetrics(metrics Metrics) Option {
 
 func (settings *cacheSettings) validate() error {
 	if settings.name == "" {
-		return errors.New("cache name must not be blank")
+		return errors.New("cache name must not be empty")
 	}
 
 	if settings.ttl > 0 && settings.ttl > maxDuration-settings.jitter {

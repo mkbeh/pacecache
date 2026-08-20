@@ -143,50 +143,20 @@ func (segment *storageSegment[K, V]) lookupEntry(
 	segment.mu.Lock()
 	defer segment.mu.Unlock()
 
-	item, ok := segment.entries[key]
+	current, ok := segment.getEntryLocked(key, now, stats)
 	if !ok {
 		if stats != nil {
 			stats.missCount++
 		}
 
-		return cachedEntry[V]{}, false
+		return current, false
 	}
-
-	// TTL controls logical validity. Once an entry expires, it is no longer
-	// considered valid and is removed when observed.
-	if item.deadline != 0 && now >= item.deadline {
-		segment.removeLocked(item)
-
-		if stats != nil {
-			stats.expirationCount++
-			stats.missCount++
-		}
-
-		return cachedEntry[V]{}, false
-	}
-
-	if segment.slidingExpiration && item.refreshTTL > 0 {
-		deadline := deadlineAfter(now, item.refreshTTL)
-
-		// A read may capture now before waiting for the segment lock. Never let a
-		// stale timestamp shorten a deadline established by a newer read or Set.
-		if deadline > item.deadline {
-			segment.expirations.update(item, deadline)
-		}
-	}
-
-	// A live hit always updates LRU recency. Sliding expiration, when enabled,
-	// refreshes expiring entries atomically under the same segment lock.
-	segment.moveToFrontLocked(item)
 
 	if stats != nil {
 		stats.hitCount++
 	}
 
-	return cachedEntry[V]{
-		value:    item.value,
-		deadline: item.deadline,
-	}, true
+	return current, true
 }
 
 func (segment *storageSegment[K, V]) getEntry(

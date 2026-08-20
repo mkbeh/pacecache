@@ -37,7 +37,17 @@ func (cache *Cache[K, V]) Set(
 
 	state.group.Forget(key)
 
-	cache.storePositive(index, key, value, expiration, cache.store.now())
+	now := cache.store.now()
+	refreshTTL := cache.effectiveTTL(expiration)
+
+	cache.store.setAt(
+		index,
+		key,
+		value,
+		refreshTTL,
+		deadlineAfter(now, refreshTTL),
+		cache.stats.segment(index),
+	)
 
 	state.mu.Unlock()
 }
@@ -70,12 +80,7 @@ func (cache *Cache[K, V]) GetOrSet(
 
 	// Keep the common existing-value path identical to Get and avoid the
 	// coordination lock when no mutation is required.
-	if current, found := cache.store.lookupAt(
-		index,
-		key,
-		cache.store.now(),
-		stats,
-	); found {
+	if current, found := cache.store.lookupAt(index, key, cache.store.now(), stats); found {
 		return current, true
 	}
 
@@ -89,7 +94,7 @@ func (cache *Cache[K, V]) GetOrSet(
 	state.group.Forget(key)
 
 	now := cache.store.now()
-	refreshTTL := cache.effectiveExpirationTTL(expiration)
+	refreshTTL := cache.effectiveTTL(expiration)
 
 	current, found := cache.store.getOrSetAt(
 		index,
@@ -136,12 +141,7 @@ func (cache *Cache[K, V]) GetOrSetEntry(
 
 	// Keep the common existing-entry path identical to GetEntry and avoid the
 	// coordination lock when no mutation is required.
-	if cached, found := cache.store.lookupEntryAt(
-		index,
-		key,
-		cache.store.now(),
-		stats,
-	); found {
+	if cached, found := cache.store.lookupEntryAt(index, key, cache.store.now(), stats); found {
 		return Entry[V]{
 			value:     cached.value,
 			expiresAt: cache.store.expiresAt(cached.deadline),
@@ -158,7 +158,7 @@ func (cache *Cache[K, V]) GetOrSetEntry(
 	state.group.Forget(key)
 
 	now := cache.store.now()
-	refreshTTL := cache.effectiveExpirationTTL(expiration)
+	refreshTTL := cache.effectiveTTL(expiration)
 
 	cached, found := cache.store.getOrSetEntryAt(
 		index,
@@ -240,6 +240,28 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 		if cache.invalidateOne(index, keys[0]) {
 			cache.stats.recordKeyInvalidation(index, 1)
 		}
+
+		return
+	}
+
+	if len(cache.states) == 1 {
+		state := &cache.states[0]
+
+		state.mu.Lock()
+
+		var invalidated int64
+
+		for _, key := range keys {
+			state.group.Forget(key)
+
+			if cache.store.deleteAt(0, key) {
+				invalidated++
+			}
+		}
+
+		state.mu.Unlock()
+
+		cache.stats.recordKeyInvalidation(0, invalidated)
 
 		return
 	}
@@ -380,23 +402,4 @@ func (cache *Cache[K, V]) invalidateOne(index int, key K) bool {
 	state.mu.Unlock()
 
 	return removed
-}
-
-func (cache *Cache[K, V]) storePositive(
-	index int,
-	key K,
-	value V,
-	expiration time.Duration,
-	now int64,
-) {
-	refreshTTL := cache.effectiveExpirationTTL(expiration)
-
-	cache.store.setAt(
-		index,
-		key,
-		value,
-		refreshTTL,
-		deadlineAfter(now, refreshTTL),
-		cache.stats.segment(index),
-	)
 }

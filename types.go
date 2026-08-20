@@ -5,7 +5,11 @@ import (
 	"time"
 )
 
-// Entry is an immutable snapshot returned by GetEntry, GetOrLoadEntry, or GetOrSetEntry.
+// Entry is a read-only snapshot returned by GetEntry, GetOrLoadEntry, or
+// GetOrSetEntry.
+//
+// Entry captures the value and expiration metadata observed by the operation.
+// The value is returned using normal Go value semantics and is not deep-copied.
 //
 // ExpiresAt returns the entry expiration time. It returns the zero time for an
 // entry stored with NoExpiration.
@@ -43,7 +47,7 @@ type loadResult[V any] struct {
 	found    bool
 }
 
-// cachedEntry is an immutable storage snapshot used by entry-aware lookups.
+// cachedEntry is a storage snapshot used by entry-aware lookups.
 type cachedEntry[V any] struct {
 	value    V
 	deadline int64

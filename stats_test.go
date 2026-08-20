@@ -13,7 +13,7 @@ func TestStatsSnapshotAggregatesSegments(t *testing.T) {
 	cache := &Cache[string, int]{
 		name:   "users",
 		store:  store,
-		states: newCacheStates[string, int](2),
+		states: make([]cacheState[string, int], 2),
 		stats:  collector,
 		ttl:    time.Minute,
 	}

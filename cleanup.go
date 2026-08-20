@@ -25,7 +25,7 @@ type cleanupWorker[K comparable, V any] struct {
 	done     chan struct{}
 
 	// scratchSegments is reusable temporary storage for segment indexes that
-	// still have due entries after a cleanup pass.
+	// still have due entries after a multi-segment cleanup pass.
 	scratchSegments []int
 	nextSegment     int
 }
@@ -36,15 +36,20 @@ func newCleanupWorker[K comparable, V any](
 	policy cleanupPolicy,
 	interval time.Duration,
 ) *cleanupWorker[K, V] {
-	return &cleanupWorker[K, V]{
-		store:           store,
-		stats:           stats,
-		policy:          policy,
-		interval:        interval,
-		stop:            make(chan struct{}),
-		done:            make(chan struct{}),
-		scratchSegments: make([]int, 0, len(store.segments)),
+	worker := &cleanupWorker[K, V]{
+		store:    store,
+		stats:    stats,
+		policy:   policy,
+		interval: interval,
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
+
+	if len(store.segments) > 1 {
+		worker.scratchSegments = make([]int, 0, len(store.segments))
+	}
+
+	return worker
 }
 
 func (worker *cleanupWorker[K, V]) start() {
@@ -64,11 +69,11 @@ func (worker *cleanupWorker[K, V]) run() {
 	for {
 		select {
 		case <-timer.C:
-			startedAt := worker.store.now()
-			pending := worker.cleanupQuantum(startedAt)
+			cutoff := worker.store.now()
+			pending := worker.cleanupQuantum(cutoff)
 			worker.stats.recordCleanupWorker(
 				pending,
-				time.Duration(worker.store.now()-startedAt),
+				time.Duration(worker.store.now()-cutoff),
 			)
 
 			next := worker.interval
@@ -89,7 +94,40 @@ func (worker *cleanupWorker[K, V]) run() {
 // It returns true when there may still be expired entries ready for physical
 // removal. The worker reschedules another quantum after a short cooperative
 // delay instead of draining an unbounded backlog in one call.
-func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
+func (worker *cleanupWorker[K, V]) cleanupQuantum(cutoff int64) bool {
+	if len(worker.store.segments) == 1 {
+		return worker.cleanupSingleSegment(cutoff)
+	}
+
+	return worker.cleanupSegments(cutoff)
+}
+
+func (worker *cleanupWorker[K, V]) cleanupSingleSegment(cutoff int64) bool {
+	startedAt := time.Now()
+	remaining := worker.policy.entryBudget
+	stats := worker.stats.segment(0)
+
+	for {
+		if worker.stopped() {
+			return false
+		}
+
+		if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
+			return true
+		}
+
+		limit := min(worker.policy.batchSize, remaining)
+		removed, pending := worker.store.cleanupExpiredAt(0, cutoff, limit, stats)
+
+		remaining -= removed
+
+		if !pending {
+			return false
+		}
+	}
+}
+
+func (worker *cleanupWorker[K, V]) cleanupSegments(cutoff int64) bool {
 	segmentCount := len(worker.store.segments)
 	if segmentCount == 0 {
 		return false
@@ -118,7 +156,7 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 		limit := min(worker.policy.batchSize, remaining)
 		stats := worker.stats.segment(index)
 
-		removed, hasMore := worker.store.cleanupExpiredAt(index, now, limit, stats)
+		removed, hasMore := worker.store.cleanupExpiredAt(index, cutoff, limit, stats)
 
 		remaining -= removed
 
@@ -152,7 +190,7 @@ func (worker *cleanupWorker[K, V]) cleanupQuantum(now int64) bool {
 			limit := min(worker.policy.batchSize, remaining)
 			stats := worker.stats.segment(index)
 
-			removed, hasMore := worker.store.cleanupExpiredAt(index, now, limit, stats)
+			removed, hasMore := worker.store.cleanupExpiredAt(index, cutoff, limit, stats)
 
 			remaining -= removed
 

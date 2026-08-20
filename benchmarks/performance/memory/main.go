@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	segmentCount  = 32
+	segmentCount  = 1
 	expiration    = time.Hour
 	readsPerEntry = 10
 	settleDelay   = 5 * time.Microsecond

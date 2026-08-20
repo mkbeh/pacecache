@@ -313,38 +313,38 @@ func (bucket *expirationBucket[K, V]) popBack() *entry[K, V] {
 	return item
 }
 
-func (queue expirationBucketHeap[K, V]) Len() int {
-	return len(queue)
+func (buckets expirationBucketHeap[K, V]) Len() int {
+	return len(buckets)
 }
 
-func (queue expirationBucketHeap[K, V]) Less(left, right int) bool {
-	return queue[left].id < queue[right].id
+func (buckets expirationBucketHeap[K, V]) Less(left, right int) bool {
+	return buckets[left].id < buckets[right].id
 }
 
-func (queue expirationBucketHeap[K, V]) Swap(left, right int) {
-	queue[left], queue[right] = queue[right], queue[left]
-	queue[left].heapIndex = left
-	queue[right].heapIndex = right
+func (buckets expirationBucketHeap[K, V]) Swap(left, right int) {
+	buckets[left], buckets[right] = buckets[right], buckets[left]
+	buckets[left].heapIndex = left
+	buckets[right].heapIndex = right
 }
 
-func (queue *expirationBucketHeap[K, V]) Push(value any) {
+func (buckets *expirationBucketHeap[K, V]) Push(value any) {
 	bucket, ok := value.(*expirationBucket[K, V])
 	if !ok {
 		panic("pacecache: invalid expiration bucket heap value")
 	}
 
-	bucket.heapIndex = len(*queue)
-	*queue = append(*queue, bucket)
+	bucket.heapIndex = len(*buckets)
+	*buckets = append(*buckets, bucket)
 }
 
-func (queue *expirationBucketHeap[K, V]) Pop() any {
-	old := *queue
+func (buckets *expirationBucketHeap[K, V]) Pop() any {
+	old := *buckets
 	last := len(old) - 1
 	bucket := old[last]
 
 	old[last] = nil
 	bucket.heapIndex = -1
-	*queue = old[:last]
+	*buckets = old[:last]
 
 	return bucket
 }
