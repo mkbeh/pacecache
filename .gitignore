@@ -31,3 +31,7 @@ go.work.sum
 .idea/
 .vscode/
 /tmp/
+
+# Performance benchmark results
+/benchmarks/performance/*/results/*
+!/benchmarks/performance/*/results/.gitkeep

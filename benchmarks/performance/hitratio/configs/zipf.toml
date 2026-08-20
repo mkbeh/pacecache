@@ -1,0 +1,31 @@
+type = "zipf"
+
+name = "Zipf"
+
+capacities = [
+    500,
+    1_000,
+    2_000,
+    5_000,
+    10_000,
+    20_000,
+    40_000,
+    80_000,
+]
+
+segments = 32
+
+limit = 1_000_000
+
+# The generator produces values k ∈ [0, imax]
+# such that P(k) is proportional to (v + k) ** (-s).
+#
+# Requirements: s > 1 and v >= 1.
+
+[zipf]
+
+s = 1.0001
+
+v = 10
+
+imax = 50_000_000
