@@ -117,6 +117,48 @@ func TestGetOrLoadErrorsAreNotCached(t *testing.T) {
 	}
 }
 
+func TestGetOrLoadLoaderPanicPropagatesToCallerAndDoesNotPoisonKey(t *testing.T) {
+	cache := mustNewCache[int](t, "users")
+	wantErr := errors.New("boom")
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+
+		_, _, _ = cache.GetOrLoad(
+			context.Background(),
+			"key",
+			func(context.Context) (int, bool, error) {
+				panic(wantErr)
+			},
+		)
+	}()
+
+	panicErr, ok := recovered.(error)
+	if !ok {
+		t.Fatalf("panic = %T(%v), want error", recovered, recovered)
+	}
+	if !errors.Is(panicErr, wantErr) {
+		t.Fatalf("panic error = %v, want errors.Is(..., %v)", panicErr, wantErr)
+	}
+	if cache.Exists("key") {
+		t.Fatal("panicking loader result became resident")
+	}
+
+	value, found, err := cache.GetOrLoad(
+		context.Background(),
+		"key",
+		func(context.Context) (int, bool, error) {
+			return 42, true, nil
+		},
+	)
+	if err != nil || !found || value != 42 {
+		t.Fatalf("next GetOrLoad() = (%d, %t, %v), want (42, true, nil)", value, found, err)
+	}
+}
+
 func TestGetOrLoadValidatesContextAndLoader(t *testing.T) {
 	cache := mustNewCache[int](t, "users")
 

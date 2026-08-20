@@ -84,7 +84,8 @@ type Call[V any] struct {
 	call *call[V]
 }
 
-// Wait waits for the shared result or for ctx to be canceled.
+// Wait waits for the shared result or for ctx to be canceled. Panics and
+// runtime.Goexit from the worker are propagated in the waiting caller.
 func (registered Call[V]) Wait(ctx context.Context) (Result[V], error) {
 	current := registered.call
 	if current == nil {
@@ -136,7 +137,8 @@ type Group[K comparable, V any] struct {
 //
 // Do only registers the caller and returns a Call handle. The caller should
 // wait with Call.Wait after releasing any external lock that protects
-// registration ordering.
+// registration ordering. Panics from fn are recovered by the worker and
+// propagated by Wait in the waiting caller.
 func (group *Group[K, V]) Do(
 	key K,
 	fn func(CallState) (V, error),
@@ -207,17 +209,14 @@ func (group *Group[K, V]) doCall(
 	recovered := false
 
 	// Double defer distinguishes panic from runtime.Goexit. Cleanup always runs
-	// before a panic is rethrown or Goexit completes the worker goroutine.
+	// before the worker completes. Panics are stored on the call and propagated
+	// by Wait in the waiting caller instead of escaping from this goroutine.
 	defer func() {
 		if !normalReturn && !recovered {
 			current.err = errGoexit
 		}
 
 		group.finish(key, current)
-
-		if panicErr, ok := current.err.(*panicError); ok {
-			panic(panicErr)
-		}
 	}()
 
 	func() {

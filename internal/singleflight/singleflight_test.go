@@ -490,30 +490,45 @@ func TestGoexitPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestPanicCleansUpWaveBeforePropagation(t *testing.T) {
+func TestPanicPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 	var group Group[string, int]
 
 	wantErr := errors.New("boom")
-	current, owner := group.register("key")
-	if !owner {
-		t.Fatal("register() owner = false, want true")
-	}
+	started := make(chan struct{})
+	release := make(chan struct{})
 
-	var recovered any
-	func() {
-		defer func() {
-			recovered = recover()
+	first := group.Do("key", func(CallState) (int, error) {
+		close(started)
+		<-release
+		panic(wantErr)
+	})
+
+	waitClosed(t, started)
+
+	second := group.Do("key", func(CallState) (int, error) {
+		return 99, nil
+	})
+
+	close(release)
+
+	for index, call := range []Call[int]{first, second} {
+		var recovered any
+		func() {
+			defer func() {
+				recovered = recover()
+			}()
+
+			_, _ = call.Wait(context.Background())
 		}()
 
-		group.doCall("key", current, func(CallState) (int, error) {
-			panic(wantErr)
-		})
-	}()
-
-	assertPanicError(t, recovered, wantErr)
+		if recovered == nil {
+			t.Fatalf("waiter %d did not observe loader panic", index)
+		}
+		assertPanicError(t, recovered, wantErr)
+	}
 
 	select {
-	case <-current.done:
+	case <-first.call.done:
 	default:
 		t.Fatal("panicking wave did not close its completion signal")
 	}
@@ -531,6 +546,78 @@ func TestPanicCleansUpWaveBeforePropagation(t *testing.T) {
 	result, err := next.Wait(context.Background())
 	if err != nil || result.Err != nil || result.Val != 42 || result.Shared {
 		t.Fatalf("next wave result = %+v, wait error = %v", result, err)
+	}
+}
+
+func TestPanicAfterWaitCancellationDoesNotEscapeWorker(t *testing.T) {
+	var group Group[string, int]
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	call := group.Do("key", func(CallState) (int, error) {
+		close(started)
+		<-release
+		panic("boom")
+	})
+
+	waitClosed(t, started)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := call.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait() error = %v, want context.Canceled", err)
+	}
+
+	close(release)
+	waitClosed(t, call.call.done)
+
+	group.mu.Lock()
+	_, active := group.m["key"]
+	group.mu.Unlock()
+	if active {
+		t.Fatal("panicking wave remained registered")
+	}
+
+	next := group.Do("key", func(CallState) (int, error) {
+		return 42, nil
+	})
+	result, err := next.Wait(context.Background())
+	if err != nil || result.Err != nil || result.Val != 42 || result.Shared {
+		t.Fatalf("next wave result = %+v, wait error = %v", result, err)
+	}
+}
+
+func TestPanicValueAndStackArePreserved(t *testing.T) {
+	var group Group[string, int]
+
+	want := struct {
+		code int
+	}{code: 42}
+
+	call := group.Do("key", func(CallState) (int, error) {
+		panic(want)
+	})
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+
+		_, _ = call.Wait(context.Background())
+	}()
+
+	panicErr, ok := recovered.(*panicError)
+	if !ok {
+		t.Fatalf("panic = %T(%v), want *panicError", recovered, recovered)
+	}
+	if panicErr.value != want {
+		t.Fatalf("panic value = %#v, want %#v", panicErr.value, want)
+	}
+	if len(panicErr.stack) == 0 {
+		t.Fatal("panic stack is empty")
 	}
 }
 
