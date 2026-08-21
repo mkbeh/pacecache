@@ -21,12 +21,12 @@ type expirationIndex[K comparable, V any] struct {
 }
 
 type expirationBucket[K comparable, V any] struct {
+	head *entry[K, V]
+	tail *entry[K, V]
+
 	id        int64
 	heapIndex int
 	count     int
-
-	head *entry[K, V]
-	tail *entry[K, V]
 }
 
 type expirationBucketHeap[K comparable, V any] []*expirationBucket[K, V]
