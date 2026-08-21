@@ -19,6 +19,17 @@ The library provides an intuitive API with predictable behavior under high concu
 
 ## Features
 
+* **Built for Concurrency:** Segmented storage scales across concurrent workloads.
+* **Bounded LRU Eviction:** Exact per-segment LRU within a fixed total capacity.
+* **Flexible Expiration:** Default and per-entry TTLs, jitter, sliding expiration, refresh, and no-expiration entries.
+* **Cache-Aside Loading:** Coalesces concurrent misses for the same key into a single load.
+* **Concurrency-Safe Updates:** Publication barriers prevent stale loads from overwriting newer cache state.
+* **Expiration Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
+* **Observability:** Built-in statistics with optional OpenTelemetry metrics.
+* **Allocation-Free Hot Paths:** Common hits, misses, and updates avoid per-operation allocations.
+
+## Features
+
 * **Built for Concurrency:** Supports configurable segmented storage to reduce lock contention under heavy load.
 * **Bounded LRU Eviction:** Enforces exact LRU eviction within each segment with configurable cache capacity.
 * **Flexible Expiration:** Supports cache-level and per-entry TTLs, jitter, sliding expiration, explicit TTL refreshes,
@@ -218,8 +229,6 @@ workloads.
 
 Benchmarks were run on an Intel Core i7-12700H (14 cores, 20 threads).
 
----
-
 ### Throughput
 
 Measures concurrent read/write throughput using a pre-generated Scrambled Zipfian access pattern to create skewed key
@@ -233,27 +242,23 @@ access and hot-key contention.
 
 ![Throughput](./benchmarks/performance/throughput/assets/throughput.png)
 
----
-
 ### Hit Ratio
 
 Measures how cache capacity affects hit ratio under a Zipfian access pattern.
 
 * **Requests:** 1,000,000
-* **Segments:** 32
+* **Segments:** 1
 * **Capacity:** 500 to 80K entries
 * **Expiration:** Disabled to isolate capacity and eviction behavior
 
 ![Hit Ratio](./benchmarks/performance/hitratio/assets/hit-ratio.png)
-
----
 
 ### Memory Consumption
 
 Measures live heap consumption after populating the cache with fixed-size keys and values.
 
 * **Data:** Fixed 32-byte keys and 32-byte values
-* **Segments:** 32
+* **Segments:** 1
 * **Capacity:** 1K to 1M entries
 * **Expiration:** 1-hour TTL
 
