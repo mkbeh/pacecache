@@ -41,7 +41,25 @@ jobs:
       - name: Set up Task
         uses: go-task/setup-task@v2
 
+      - name: Create temporary Go workspace
+        run: bash .github/scripts/create-go-workspace.sh --with-examples
+
+      - name: Verify workspace resolution
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: |
+          set -euo pipefail
+
+          test "$(go env GOWORK)" = "${GITHUB_WORKSPACE}/go.work"
+
+          go list -m \
+            -f '{{if .Main}}{{.Path}} => {{.Dir}}{{end}}' \
+            all |
+            sed '/^$/d'
+
       - name: Run tests
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
         run: task test
 
   race:
@@ -65,5 +83,23 @@ jobs:
       - name: Set up Task
         uses: go-task/setup-task@v2
 
+      - name: Create temporary Go workspace
+        run: bash .github/scripts/create-go-workspace.sh --with-examples
+
+      - name: Verify workspace resolution
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: |
+          set -euo pipefail
+
+          test "$(go env GOWORK)" = "${GITHUB_WORKSPACE}/go.work"
+
+          go list -m \
+            -f '{{if .Main}}{{.Path}} => {{.Dir}}{{end}}' \
+            all |
+            sed '/^$/d'
+
       - name: Run race tests
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
         run: task test-race

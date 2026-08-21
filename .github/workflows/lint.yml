@@ -21,9 +21,18 @@ env:
 
 jobs:
   lint:
-    name: Lint
+    name: Lint (${{ matrix.module }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - .
+          - extra/paceotel
+          - examples/basic
+          - examples/otel
 
     steps:
       - name: Check out repository
@@ -38,8 +47,42 @@ jobs:
             extra/**/go.sum
             examples/**/go.sum
 
-      - name: Set up Task
-        uses: go-task/setup-task@v2
+      - name: Create temporary Go workspace
+        run: bash .github/scripts/create-go-workspace.sh --with-examples
 
-      - name: Run linters
-        run: task lint
+      - name: Verify workspace resolution
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: |
+          set -euo pipefail
+
+          test "$(go env GOWORK)" = "${GITHUB_WORKSPACE}/go.work"
+
+          go list -m \
+            -f '{{if .Main}}{{.Path}} => {{.Dir}}{{end}}' \
+            all |
+            sed '/^$/d'
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        with:
+          version: v2.12.2
+          working-directory: ${{ matrix.module }}
+          args: >-
+            --config=${{ github.workspace }}/.golangci.yml
+            --timeout=5m
+            --modules-download-mode=readonly
+
+  result:
+    name: Lint
+    if: always()
+    needs:
+      - lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check lint jobs
+        run: test "${{ needs.lint.result }}" = "success"
