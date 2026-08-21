@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/mkbeh/pacecache v1.0.0
+	github.com/mkbeh/pacecache v1.0.1
 	github.com/pingcap/go-ycsb v1.0.3
 	gonum.org/v1/plot v0.17.0
 )
