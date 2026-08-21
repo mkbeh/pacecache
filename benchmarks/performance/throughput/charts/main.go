@@ -28,7 +28,7 @@ type benchmarkKey struct {
 func main() {
 	input := flag.String(
 		"input",
-		"./benchmarks/performance/throughput/results/throughput_cpu8_segments512.txt",
+		"./benchmarks/performance/throughput/results/throughput.txt",
 		"path to throughput benchmark result",
 	)
 	output := flag.String(

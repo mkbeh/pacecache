@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	throughputWorkers  = 8
-	throughputSegments = 512
+	throughputWorkers            = 8
+	throughputSegments           = 512
+	throughputPopulationAttempts = 8
 )
 
 var throughputMaxEntries = [...]int{
@@ -76,23 +77,8 @@ func runThroughputBenchmark(
 ) {
 	b.Helper()
 
-	cache, err := pacecache.New[string, string](
-		"throughput",
-		pacecache.WithMaxEntries(maxEntries),
-		pacecache.WithSegmentCount(throughputSegments),
-	)
-	if err != nil {
-		b.Fatalf("create cache: %v", err)
-	}
+	cache := newThroughputCache(b, maxEntries, data)
 	b.Cleanup(cache.Close)
-
-	for index, key := range data.keys {
-		cache.Set(key, data.values[index], pacecache.NoExpiration)
-	}
-
-	if evictions := cache.Stats().EvictionCount; evictions != 0 {
-		b.Fatalf("population caused %d evictions", evictions)
-	}
 
 	var workers atomic.Uint64
 
@@ -136,6 +122,46 @@ func runThroughputBenchmark(
 	}
 
 	b.ReportMetric(float64(b.N)/elapsed.Seconds(), "ops/s")
+}
+
+func newThroughputCache(
+	b *testing.B,
+	maxEntries int,
+	data throughputData,
+) *pacecache.Cache[string, string] {
+	b.Helper()
+
+	for range throughputPopulationAttempts {
+		cache, err := pacecache.New[string, string](
+			"throughput",
+			pacecache.WithMaxEntries(maxEntries),
+			pacecache.WithSegmentCount(throughputSegments),
+		)
+		if err != nil {
+			b.Fatalf("create cache: %v", err)
+		}
+
+		for index, key := range data.keys {
+			cache.Set(
+				key,
+				data.values[index],
+				pacecache.NoExpiration,
+			)
+		}
+
+		if cache.Stats().EvictionCount == 0 {
+			return cache
+		}
+
+		cache.Close()
+	}
+
+	b.Fatalf(
+		"population caused evictions after %d attempts",
+		throughputPopulationAttempts,
+	)
+
+	return nil
 }
 
 func newThroughputData(length int) throughputData {
