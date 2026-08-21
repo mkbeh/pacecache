@@ -17,13 +17,13 @@ The library provides an intuitive API with predictable behavior under high concu
 
 ## Features
 
-* **Generic API:** Type-safe caching with comparable keys and arbitrary value types.
 * **Built for Concurrency:** Segmented storage scales across concurrent workloads.
+* **Generic API:** Type-safe caching with comparable keys and arbitrary value types.
 * **Bounded LRU Eviction:** Exact per-segment LRU within a fixed total capacity.
 * **Flexible Expiration:** Default and per-entry TTLs, jitter, sliding expiration, refresh, and no-expiration entries.
+* **Expiration Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
 * **Cache-Aside Loading:** Coalesces concurrent misses for the same key into a single load.
 * **Concurrency-Safe Updates:** Publication barriers prevent stale loads from overwriting newer cache state.
-* **Expiration Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
 * **Observability:** Built-in statistics with optional OpenTelemetry metrics.
 
 ## Installation
