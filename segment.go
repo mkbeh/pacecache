@@ -10,6 +10,15 @@ type entry[K comparable, V any] struct {
 
 	value V
 
+	// Exact LRU membership.
+	previous *entry[K, V]
+	next     *entry[K, V]
+
+	// Expiration bucket membership. These links are independent from the LRU
+	// list so expiration maintenance never needs another per-entry allocation.
+	expirationPrevious *entry[K, V]
+	expirationNext     *entry[K, V]
+
 	// refreshTTL stores the effective TTL used by sliding expiration. Any
 	// configured jitter is selected when the entry is stored and remains stable
 	// until the entry is overwritten. Zero means that the entry is not eligible
@@ -19,15 +28,6 @@ type entry[K comparable, V any] struct {
 	// deadline stores the absolute monotonic deadline in nanoseconds relative to
 	// storage.origin. Zero means that the entry does not expire.
 	deadline int64
-
-	// Exact LRU membership.
-	previous *entry[K, V]
-	next     *entry[K, V]
-
-	// Expiration bucket membership. These links are independent from the LRU
-	// list so expiration maintenance never needs another per-entry allocation.
-	expirationPrevious *entry[K, V]
-	expirationNext     *entry[K, V]
 }
 
 type storageSegment[K comparable, V any] struct {
