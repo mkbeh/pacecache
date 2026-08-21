@@ -26,7 +26,7 @@ Initial production release of the core `pacecache` module.
 
 ---
 
-## extra/paceotel/v1.0.0 - 2026-08-21
+## extra/paceotel/v1.0.1 - 2026-08-21
 
 Initial release of the `paceotel` extension module.
 
