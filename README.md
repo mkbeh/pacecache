@@ -118,8 +118,7 @@ loader := pacecache.Loader[string](
 // Return the cached value or invoke the loader on a miss.
 value, found, err := cache.GetOrLoad(ctx, "key", loader)
 if err != nil {
-    log.Printf("failed to load key: %v", err)
-    return
+    panic(err)
 }
 
 if found {
