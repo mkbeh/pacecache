@@ -1,6 +1,6 @@
 # pacecache
 
-<img align="right" width="300" src="https://github.com/user-attachments/assets/0d80da22-bd60-4abd-b9e6-42838f39261c" alt="pacecache">
+<img align="right" width="250" src="https://github.com/user-attachments/assets/0d80da22-bd60-4abd-b9e6-42838f39261c" alt="pacecache">
 
 **Fast and concurrent in-memory cache for Go**
 
@@ -27,18 +27,6 @@ The library provides an intuitive API with predictable behavior under high concu
 * **Expiration Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
 * **Observability:** Built-in statistics with optional OpenTelemetry metrics.
 * **Allocation-Free Hot Paths:** Common hits, misses, and updates avoid per-operation allocations.
-
-## Features
-
-* **Built for Concurrency:** Supports configurable segmented storage to reduce lock contention under heavy load.
-* **Bounded LRU Eviction:** Enforces exact LRU eviction within each segment with configurable cache capacity.
-* **Flexible Expiration:** Supports cache-level and per-entry TTLs, jitter, sliding expiration, explicit TTL refreshes,
-  and entries without time-based expiration.
-* **Cache-Aside Loading:** Coalesces concurrent misses for the same key to prevent cache stampedes.
-* **Concurrency-Safe Updates:** Prevents stale in-flight loads from overwriting newer cache state.
-* **Expiration Cleanup:** Supports lazy expiration, explicit cleanup, and an optional background cleanup worker.
-* **Observability:** Provides built-in statistics and optional OpenTelemetry metrics for monitoring cache behavior.
-* **Allocation-Free Hot Paths:** Avoids per-operation allocations for common cache hits, misses, and updates.
 
 ## Installation
 
