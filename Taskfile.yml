@@ -22,6 +22,18 @@ vars:
           done
       } | sort -u
 
+  # Full local workspace for development and benchmarks.
+  WORKSPACE_MODULE_DIRS:
+    sh: |
+      {
+        printf '.\n'
+
+        find ./benchmarks ./extra ./examples -name go.mod -print |
+          while IFS= read -r mod; do
+            dirname "$mod"
+          done
+      } | sort -u | tr '\n' ' '
+
   # Coverage is aggregated for production modules only. Example modules are
   # still linted and tested, but do not affect the library coverage metric.
   COVERAGE_MODULE_DIRS:
@@ -41,6 +53,20 @@ env:
   GOWORK: "{{.ROOT_DIR}}/go.work"
 
 tasks:
+  init-workspace:
+    desc: "Initialize or reset the local Go workspace"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      GOWORK: "off"
+    cmds:
+      - |
+        set -eu
+
+        rm -f go.work
+
+        go work init {{.WORKSPACE_MODULE_DIRS}}
+        go work edit -go=1.26 go.work
+
   run:
     desc: "Run lint and race tests for all modules"
     cmds:
@@ -49,6 +75,8 @@ tasks:
 
   lint:
     desc: "Lint all modules"
+    deps:
+      - _workspace
     cmds:
       - for: { var: MODULE_DIRS }
         task: _run-linter
@@ -57,6 +85,8 @@ tasks:
 
   test:
     desc: "Run tests for all modules"
+    deps:
+      - _workspace
     cmds:
       - for: { var: MODULE_DIRS }
         task: _run-tests
@@ -65,6 +95,8 @@ tasks:
 
   test-race:
     desc: "Run tests with the race detector for all modules"
+    deps:
+      - _workspace
     cmds:
       - for: { var: MODULE_DIRS }
         task: _run-race-tests
@@ -73,6 +105,8 @@ tasks:
 
   coverage:
     desc: "Run tests and print total coverage for production modules"
+    deps:
+      - _workspace
     cmds:
       - |
         set -eu
@@ -118,6 +152,21 @@ tasks:
       - coverage
     cmds:
       - go tool cover -html=coverage.out -o coverage.html
+
+  _workspace:
+    internal: true
+    dir: "{{.ROOT_DIR}}"
+    env:
+      GOWORK: "off"
+    cmds:
+      - |
+        set -eu
+
+        if [ -f go.work ]; then
+          exit 0
+        fi
+
+        go work init {{.MODULE_DIRS}}
 
   _run-tests:
     internal: true
