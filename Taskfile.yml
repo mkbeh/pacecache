@@ -17,7 +17,6 @@ vars:
         printf '.\n'
 
         find ./extra ./examples -name go.mod -print |
-          sort |
           while IFS= read -r mod; do
             dirname "$mod"
           done
@@ -31,7 +30,6 @@ vars:
         printf '.\n'
 
         find ./extra -name go.mod -print |
-          sort |
           while IFS= read -r mod; do
             dirname "$mod"
           done

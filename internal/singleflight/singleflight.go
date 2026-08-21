@@ -44,7 +44,7 @@ func (panicErr *panicError) Unwrap() error {
 	return err
 }
 
-func newPanicError(value any) error {
+func newPanicError(value any) *panicError {
 	stack := debug.Stack()
 
 	// The first line is "goroutine N [status]:". By the time another caller
@@ -57,7 +57,7 @@ func newPanicError(value any) error {
 	return &panicError{value: value, stack: stack}
 }
 
-// CallState exposes mutable state associated with one active singleflight call.
+// CallState exposes state associated with one active singleflight call.
 // It remains valid only until that call completes.
 type CallState struct {
 	forgotten *atomic.Bool
@@ -86,8 +86,8 @@ type Call[V any] struct {
 
 // Wait waits for the shared result or for ctx to be canceled. Panics and
 // runtime.Goexit from the worker are propagated in the waiting caller.
-func (registered Call[V]) Wait(ctx context.Context) (Result[V], error) {
-	current := registered.call
+func (handle Call[V]) Wait(ctx context.Context) (Result[V], error) {
+	current := handle.call
 	if current == nil {
 		return Result[V]{}, context.Canceled
 	}
@@ -206,13 +206,13 @@ func (group *Group[K, V]) doCall(
 	fn func(CallState) (V, error),
 ) {
 	normalReturn := false
-	recovered := false
+	panicRecovered := false
 
 	// Double defer distinguishes panic from runtime.Goexit. Cleanup always runs
 	// before the worker completes. Panics are stored on the call and propagated
 	// by Wait in the waiting caller instead of escaping from this goroutine.
 	defer func() {
-		if !normalReturn && !recovered {
+		if !normalReturn && !panicRecovered {
 			current.err = errGoexit
 		}
 
@@ -235,7 +235,7 @@ func (group *Group[K, V]) doCall(
 	}()
 
 	if !normalReturn {
-		recovered = true
+		panicRecovered = true
 	}
 }
 

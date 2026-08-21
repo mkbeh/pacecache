@@ -95,15 +95,15 @@ func (metrics *Metrics) RegisterCache(
 
 	name := cache.Name()
 	if name == "" {
-		return nil, errors.New("paceotel: cache name is blank")
+		return nil, errors.New("paceotel: cache name is empty")
 	}
 
-	provider := metrics.meterProvider
-	if provider == nil {
-		provider = otel.GetMeterProvider()
+	meterProvider := metrics.meterProvider
+	if meterProvider == nil {
+		meterProvider = otel.GetMeterProvider()
 	}
 
-	return registerCacheMetrics(cache, name, provider)
+	return registerCacheMetrics(cache, name, meterProvider)
 }
 
 func registerCacheMetrics(

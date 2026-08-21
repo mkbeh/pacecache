@@ -67,8 +67,8 @@ func TestRegisterCacheValidation(t *testing.T) {
 		if registration != nil {
 			t.Fatalf("RegisterCache() registration = %v, want nil", registration)
 		}
-		if err == nil || err.Error() != "paceotel: cache name is blank" {
-			t.Fatalf("RegisterCache() error = %v, want cache name is blank", err)
+		if err == nil || err.Error() != "paceotel: cache name is empty" {
+			t.Fatalf("RegisterCache() error = %v, want cache name is empty", err)
 		}
 	})
 }
