@@ -1,0 +1,171 @@
+version: "3"
+
+vars:
+  LINTER_VER: "v2.12.2"
+
+  GOMODCACHE:
+    sh: go env GOMODCACHE
+
+  GOCACHE:
+    sh: go env GOCACHE
+
+  GOSUMCACHE:
+    sh: echo "$(go env GOPATH)/pkg/sumdb"
+
+  # Root module + all local submodules that are part of the project.
+  # Examples are included because they depend on unpublished local modules.
+  MODULE_DIRS:
+    sh: |
+      {
+        printf '.\n'
+
+        find ./extra ./examples -name go.mod -print |
+          while IFS= read -r mod; do
+            dirname "$mod"
+          done
+      } | sort -u
+
+  # Coverage is aggregated for production modules only. Example modules are
+  # still linted and tested, but do not affect the library coverage metric.
+  COVERAGE_MODULE_DIRS:
+    sh: |
+      {
+        printf '.\n'
+
+        find ./extra -name go.mod -print |
+          while IFS= read -r mod; do
+            dirname "$mod"
+          done
+      } | sort -u | tr '\n' ' '
+
+env:
+  # The workspace resolves unpublished local modules, including examples,
+  # against the current checkout instead of released module versions.
+  GOWORK: "{{.ROOT_DIR}}/go.work"
+
+tasks:
+  init-workspace:
+    desc: "Initialize or reset the local Go workspace"
+    cmds:
+      - bash .github/scripts/create-go-workspace.sh --with-examples --with-benchmarks
+
+  run:
+    desc: "Run lint and race tests for all modules"
+    cmds:
+      - task: lint
+      - task: test-race
+
+  lint:
+    desc: "Lint all modules"
+    cmds:
+      - for: { var: MODULE_DIRS }
+        task: _run-linter
+        vars:
+          WORK_DIR: "/app/{{.ITEM}}"
+
+  test:
+    desc: "Run tests for all modules"
+    cmds:
+      - for: { var: MODULE_DIRS }
+        task: _run-tests
+        vars:
+          WORK_DIR: "{{.ITEM}}"
+
+  test-race:
+    desc: "Run tests with the race detector for all modules"
+    cmds:
+      - for: { var: MODULE_DIRS }
+        task: _run-race-tests
+        vars:
+          WORK_DIR: "{{.ITEM}}"
+
+  coverage:
+    desc: "Run tests and print total coverage for production modules"
+    cmds:
+      - |
+        set -eu
+
+        root="{{.ROOT_DIR}}"
+        output="$root/coverage.out"
+        profiles="$(mktemp -d)"
+
+        cleanup() {
+          rm -rf "$profiles"
+        }
+        trap cleanup EXIT
+
+        printf 'mode: atomic\n' > "$output"
+
+        profile_index=0
+
+        for module in {{.COVERAGE_MODULE_DIRS}}; do
+          echo "==> $module"
+
+          profile="$profiles/$profile_index.out"
+          profile_index=$((profile_index + 1))
+
+          (
+            cd "$root/$module"
+
+            GOWORK="$root/go.work" go test \
+              -mod=readonly \
+              -count=1 \
+              -covermode=atomic \
+              -coverprofile="$profile" \
+              ./...
+          )
+
+          tail -n +2 "$profile" >> "$output"
+        done
+
+        GOWORK="$root/go.work" go tool cover -func="$output" | grep total
+
+  coverage:html:
+    desc: "Generate HTML coverage report"
+    deps:
+      - coverage
+    cmds:
+      - go tool cover -html=coverage.out -o coverage.html
+
+  _run-tests:
+    internal: true
+    requires:
+      vars:
+        - WORK_DIR
+    dir: "{{.ROOT_DIR}}/{{.WORK_DIR}}"
+    cmds:
+      - echo "==> {{.WORK_DIR}}"
+      - go test -mod=readonly -v -count=1 ./...
+
+  _run-race-tests:
+    internal: true
+    requires:
+      vars:
+        - WORK_DIR
+    dir: "{{.ROOT_DIR}}/{{.WORK_DIR}}"
+    cmds:
+      - echo "==> {{.WORK_DIR}}"
+      - go test -mod=readonly -race -v -count=1 ./...
+
+  _run-linter:
+    internal: true
+    requires:
+      vars:
+        - WORK_DIR
+    cmds:
+      - echo "==> {{.WORK_DIR}}"
+      - mkdir -p "{{.GOSUMCACHE}}"
+      - >
+        docker run --rm
+        -u $(id -u):$(id -g)
+        -v {{.ROOT_DIR}}:/app
+        -v {{.GOMODCACHE}}:/go/pkg/mod
+        -v {{.GOSUMCACHE}}:/go/pkg/sumdb
+        -v {{.GOCACHE}}:/go/build-cache
+        -e GOMODCACHE=/go/pkg/mod
+        -e GOCACHE=/go/build-cache
+        -e GOLANGCI_LINT_CACHE=/go/build-cache/golangci-lint
+        -e GOWORK=/app/go.work
+        -w {{.WORK_DIR}}
+        golangci/golangci-lint:{{.LINTER_VER}}
+        golangci-lint run --timeout 5m --modules-download-mode readonly

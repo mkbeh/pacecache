@@ -1,0 +1,105 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            extra/**/go.sum
+            examples/**/go.sum
+
+      - name: Set up Task
+        uses: go-task/setup-task@v2
+
+      - name: Create temporary Go workspace
+        run: bash .github/scripts/create-go-workspace.sh --with-examples
+
+      - name: Verify workspace resolution
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: |
+          set -euo pipefail
+
+          test "$(go env GOWORK)" = "${GITHUB_WORKSPACE}/go.work"
+
+          go list -m \
+            -f '{{if .Main}}{{.Path}} => {{.Dir}}{{end}}' \
+            all |
+            sed '/^$/d'
+
+      - name: Run tests
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: task test
+
+  race:
+    name: Race
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            extra/**/go.sum
+            examples/**/go.sum
+
+      - name: Set up Task
+        uses: go-task/setup-task@v2
+
+      - name: Create temporary Go workspace
+        run: bash .github/scripts/create-go-workspace.sh --with-examples
+
+      - name: Verify workspace resolution
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: |
+          set -euo pipefail
+
+          test "$(go env GOWORK)" = "${GITHUB_WORKSPACE}/go.work"
+
+          go list -m \
+            -f '{{if .Main}}{{.Path}} => {{.Dir}}{{end}}' \
+            all |
+            sed '/^$/d'
+
+      - name: Run race tests
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
+        run: task test-race

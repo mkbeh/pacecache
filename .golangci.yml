@@ -1,0 +1,186 @@
+version: "2"
+
+run:
+  go: "1.26"
+  timeout: 5m
+  allow-parallel-runners: true
+
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - revive
+    - rowserrcheck
+    - sloglint
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usetesting
+    - wastedassign
+    - whitespace
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+
+    errorlint:
+      errorf: false
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    gocritic:
+      disabled-checks:
+        - appendAssign
+        - builtinShadow
+        - commentedOutCode
+        - emptyStringTest
+        - evalOrder
+        - ifElseChain
+        - importShadow
+        - ptrToRefParam
+        - sloppyReassign
+        - tooManyResultsChecker
+        - typeDefFirst
+        - unnamedResult
+        - unnecessaryBlock
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      settings:
+        hugeParam:
+          sizeThreshold: 256
+        rangeValCopy:
+          sizeThreshold: 256
+
+    gosec:
+      excludes:
+        - G104
+        - G115
+        - G404
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    revive:
+      confidence: 0.8
+      severity: warning
+      rules:
+        - name: atomic
+        - name: blank-imports
+        - name: bool-literal-in-expr
+        - name: call-to-gc
+        - name: constant-logical-expr
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: defer
+        - name: dot-imports
+        - name: duplicated-imports
+        - name: early-return
+        - name: empty-block
+        - name: empty-lines
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: get-return
+        - name: identical-branches
+        - name: if-return
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: optimize-operands-order
+        - name: range
+        - name: range-val-in-closure
+        - name: receiver-naming
+        - name: string-of-int
+        - name: struct-tag
+        - name: superfluous-else
+        - name: time-equal
+        - name: time-naming
+        - name: unconditional-recursion
+        - name: unexported-naming
+        - name: unexported-return
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: useless-break
+        - name: var-declaration
+        - name: waitgroup-by-value
+
+    sloglint:
+      no-mixed-args: true
+      no-global: default
+      context: scope
+      static-msg: true
+      no-raw-keys: false
+      key-naming-case: snake
+      args-on-sep-lines: true
+
+    staticcheck:
+      checks:
+        - all
+        - -SA1012
+        - -SA1019
+        - -ST1000
+
+  exclusions:
+    generated: lax
+    paths:
+      - third_party/
+      - builtin/
+      - examples/
+      - _tmp/
+    rules:
+      # Keep the generic singleflight port structurally aligned with
+      # golang.org/x/sync/singleflight.
+      - path: ^internal/singleflight/
+        linters:
+          - errorlint
+          - gocritic
+          - revive
+
+      - path: _test\.go
+        linters:
+          - revive
+        text: "dot-imports"
+
+issues:
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party/
+      - builtin/
+      - examples/
+      - _tmp/

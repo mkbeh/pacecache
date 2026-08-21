@@ -1,0 +1,24 @@
+version: 2
+
+updates:
+  - package-ecosystem: "gomod"
+    directories:
+      - "/"
+      - "/extra/*"
+      - "/examples/*"
+    schedule:
+      interval: "weekly"
+    ignore:
+      # Local modules are resolved through go.work and may not be published yet.
+      - dependency-name: "github.com/mkbeh/pacecache"
+      - dependency-name: "github.com/mkbeh/pacecache/*"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+        group-by: dependency-name
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
