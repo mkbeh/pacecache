@@ -1,6 +1,6 @@
 # pacecache
 
-<img align="right" width="250" src="https://github.com/user-attachments/assets/0d80da22-bd60-4abd-b9e6-42838f39261c" alt="pacecache">
+<img align="right" width="300" src="https://github.com/user-attachments/assets/0d80da22-bd60-4abd-b9e6-42838f39261c" alt="pacecache">
 
 **Fast and concurrent in-memory cache for Go**
 
@@ -249,8 +249,6 @@ Measures live heap consumption after populating the cache with fixed-size keys a
 * **Expiration:** 1-hour TTL
 
 ![Memory Consumption](./benchmarks/performance/memory/assets/memory.png)
-
----
 
 For the complete methodology, source code, and execution instructions, see the
 [performance benchmarks](./benchmarks/performance).
