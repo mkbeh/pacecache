@@ -15,8 +15,6 @@ allocation-free.
 
 The library provides an intuitive API with predictable behavior under high concurrency and contention.
 
-<br clear="right">
-
 ## Features
 
 * **Built for Concurrency:** Segmented storage scales across concurrent workloads.
