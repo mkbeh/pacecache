@@ -20,6 +20,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/pingcap/errors v0.11.5-0.20211224045212-9687c2b0f87c // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	golang.org/x/image v0.30.0 // indirect
 	golang.org/x/text v0.28.0 // indirect

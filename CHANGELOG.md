@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## v1.0.1 - 2026-08-21
+
+This patch release focuses on reducing garbage collector scan work and improving benchmark stability.
+
+### Changed
+
+* **GC Performance Optimizations:** Reordered fields in cache entries and expiration buckets to reduce GC scan work
+  without changing object sizes or allocation behavior.
+* **Stable Benchmarks:** Fixed rare per-segment evictions during benchmark population caused by randomized hash
+  distribution.
+
 ## v1.0.0 - 2026-08-21
 
 Initial production release of the core `pacecache` module.
