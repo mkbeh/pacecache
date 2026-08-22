@@ -61,19 +61,19 @@ func newStorageWithExpirationResolution[K comparable, V any](
 func newStorageWithSegments[K comparable, V any](maxEntries, segmentCount int) *storage[K, V] {
 	segments := make([]storageSegment[K, V], segmentCount)
 
-	baseCapacity := maxEntries / segmentCount
-	extraCapacity := maxEntries % segmentCount
+	baseMaxEntries := maxEntries / segmentCount
+	extraEntries := maxEntries % segmentCount
 
 	for index := range segments {
-		capacity := baseCapacity
+		segmentMaxEntries := baseMaxEntries
 
-		if index < extraCapacity {
-			capacity++
+		if index < extraEntries {
+			segmentMaxEntries++
 		}
 
 		segments[index] = storageSegment[K, V]{
-			entries:    make(map[K]*entry[K, V], capacity),
-			maxEntries: capacity,
+			entries:    make(map[K]*entry[K, V]),
+			maxEntries: segmentMaxEntries,
 		}
 	}
 
