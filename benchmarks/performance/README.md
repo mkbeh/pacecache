@@ -34,7 +34,7 @@ go test ./benchmarks/performance/throughput \
   -benchtime=3s \
   -count=5 \
   -cpu=8 \
-  | tee ./benchmarks/performance/throughput/results/throughput_cpu8_segments512.txt
+  | tee ./benchmarks/performance/throughput/results/throughput.txt
 ```
 
 ---

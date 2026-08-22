@@ -14,6 +14,7 @@ import (
 	perfchart "github.com/mkbeh/pacecache/benchmarks/performance/internal/chart"
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/vg"
 )
 
 var benchmarkLine = regexp.MustCompile(
@@ -21,8 +22,8 @@ var benchmarkLine = regexp.MustCompile(
 )
 
 type benchmarkKey struct {
-	capacity int
-	writes   int
+	maxEntries int
+	writeRatio int
 }
 
 func main() {
@@ -50,51 +51,60 @@ func run(input, output string) error {
 		return err
 	}
 
-	capacities := uniqueCapacities(results)
+	maxEntriesValues := uniqueMaxEntries(results)
 	writeRatios := uniqueWriteRatios(results)
 
 	p := perfchart.New(
-		"Throughput",
+		"Throughput by Write Ratio",
 		"Write ratio (%)",
 		"Throughput (M ops/s)",
 	)
-	p.X.Min = 0
-	p.X.Max = 100
-	p.X.Tick.Marker = percentTicks(writeRatios)
 
-	minThroughput := math.Inf(1)
-	maxThroughput := math.Inf(-1)
+	barWidth := vg.Points(32)
+	barGap := vg.Points(6)
 
-	for index, capacity := range capacities {
-		points := make(plotter.XYs, 0, len(writeRatios))
-		for _, writes := range writeRatios {
-			values := results[benchmarkKey{capacity: capacity, writes: writes}]
-			if len(values) == 0 {
-				return fmt.Errorf("missing throughput results for capacity=%d writes=%d", capacity, writes)
+	var maxThroughput float64
+	seriesStride := barWidth + barGap
+	seriesCenter := float64(len(maxEntriesValues)-1) / 2
+
+	for index, maxEntries := range maxEntriesValues {
+		values := make(plotter.Values, 0, len(writeRatios))
+
+		for _, writeRatio := range writeRatios {
+			runs := results[benchmarkKey{maxEntries: maxEntries, writeRatio: writeRatio}]
+			if len(runs) == 0 {
+				return fmt.Errorf(
+					"missing throughput results for max_entries=%d writes=%d",
+					maxEntries,
+					writeRatio,
+				)
 			}
 
-			throughput := median(values) / 1_000_000
-			minThroughput = math.Min(minThroughput, throughput)
+			throughput := median(runs) / 1_000_000
 			maxThroughput = math.Max(maxThroughput, throughput)
-
-			points = append(points, plotter.XY{
-				X: float64(writes),
-				Y: throughput,
-			})
+			values = append(values, throughput)
 		}
 
-		line, scatter, err := plotter.NewLinePoints(points)
+		bars, err := plotter.NewBarChart(values, barWidth)
 		if err != nil {
-			return fmt.Errorf("create throughput series: %w", err)
+			return fmt.Errorf("create throughput bars: %w", err)
 		}
 
-		perfchart.StyleLinePoints(line, scatter, index)
+		bars.Color = perfchart.Color(index)
+		bars.LineStyle.Width = 0
+		bars.Offset = vg.Length((float64(index) - seriesCenter) * float64(seriesStride))
 
-		p.Add(line, scatter)
-		p.Legend.Add(perfchart.CapacityLabel(capacity), line, scatter)
+		p.Add(bars)
+		p.Legend.Add(perfchart.CountLabel(maxEntries), bars)
 	}
 
-	setThroughputYRange(p, minThroughput, maxThroughput)
+	const groupPadding = 0.65
+
+	p.NominalX(writeRatioLabels(writeRatios)...)
+	p.X.Min = -groupPadding
+	p.X.Max = float64(len(writeRatios)-1) + groupPadding
+
+	setThroughputYRange(p, maxThroughput)
 
 	return perfchart.Save(p, output)
 }
@@ -115,11 +125,11 @@ func readResults(path string) (map[benchmarkKey][]float64, error) {
 			continue
 		}
 
-		capacity, err := strconv.Atoi(match[1])
+		maxEntries, err := strconv.Atoi(match[1])
 		if err != nil {
-			return nil, fmt.Errorf("parse capacity %q: %w", match[1], err)
+			return nil, fmt.Errorf("parse max entries %q: %w", match[1], err)
 		}
-		writes, err := strconv.Atoi(match[2])
+		writeRatio, err := strconv.Atoi(match[2])
 		if err != nil {
 			return nil, fmt.Errorf("parse write ratio %q: %w", match[2], err)
 		}
@@ -128,7 +138,7 @@ func readResults(path string) (map[benchmarkKey][]float64, error) {
 			return nil, fmt.Errorf("parse ops/s %q: %w", match[3], err)
 		}
 
-		key := benchmarkKey{capacity: capacity, writes: writes}
+		key := benchmarkKey{maxEntries: maxEntries, writeRatio: writeRatio}
 		results[key] = append(results[key], ops)
 	}
 
@@ -142,10 +152,10 @@ func readResults(path string) (map[benchmarkKey][]float64, error) {
 	return results, nil
 }
 
-func uniqueCapacities(results map[benchmarkKey][]float64) []int {
+func uniqueMaxEntries(results map[benchmarkKey][]float64) []int {
 	set := make(map[int]struct{})
 	for key := range results {
-		set[key.capacity] = struct{}{}
+		set[key.maxEntries] = struct{}{}
 	}
 
 	values := make([]int, 0, len(set))
@@ -159,7 +169,7 @@ func uniqueCapacities(results map[benchmarkKey][]float64) []int {
 func uniqueWriteRatios(results map[benchmarkKey][]float64) []int {
 	set := make(map[int]struct{})
 	for key := range results {
-		set[key.writes] = struct{}{}
+		set[key.writeRatio] = struct{}{}
 	}
 
 	values := make([]int, 0, len(set))
@@ -170,15 +180,12 @@ func uniqueWriteRatios(results map[benchmarkKey][]float64) []int {
 	return values
 }
 
-func percentTicks(values []int) plot.ConstantTicks {
-	ticks := make(plot.ConstantTicks, 0, len(values))
-	for _, value := range values {
-		ticks = append(ticks, plot.Tick{
-			Value: float64(value),
-			Label: strconv.Itoa(value),
-		})
+func writeRatioLabels(values []int) []string {
+	labels := make([]string, len(values))
+	for index, value := range values {
+		labels[index] = strconv.Itoa(value)
 	}
-	return ticks
+	return labels
 }
 
 func median(values []float64) float64 {
@@ -192,19 +199,13 @@ func median(values []float64) float64 {
 	return (copyValues[middle-1] + copyValues[middle]) / 2
 }
 
-func setThroughputYRange(p *plot.Plot, minValue, maxValue float64) {
-	if math.IsInf(minValue, 0) || math.IsInf(maxValue, 0) {
-		return
-	}
+func setThroughputYRange(p *plot.Plot, maxValue float64) {
+	const tickStep = 10
 
-	span := maxValue - minValue
-	if span <= 0 {
-		span = math.Max(1, maxValue*0.1)
-	}
+	padding := math.Max(2, maxValue*0.05)
+	maxTick := int(math.Ceil((maxValue+padding)/tickStep) * tickStep)
 
-	padding := span * 0.12
-	const tickStep = 5.0
-
-	p.Y.Min = math.Max(0, math.Floor((minValue-padding)/tickStep)*tickStep)
-	p.Y.Max = math.Ceil((maxValue+padding)/tickStep) * tickStep
+	p.Y.Min = 0
+	p.Y.Max = float64(maxTick)
+	p.Y.Tick.Marker = perfchart.IntegerTicks(maxTick, tickStep)
 }
