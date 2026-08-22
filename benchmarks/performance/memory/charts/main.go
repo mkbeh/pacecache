@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 	perfchart "github.com/mkbeh/pacecache/benchmarks/performance/internal/chart"
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/vg"
+	"gonum.org/v1/plot/vg/draw"
 )
 
 const bytesPerMiB = 1024 * 1024
@@ -47,34 +50,67 @@ func run(input, output string) error {
 		return err
 	}
 
-	points := make(plotter.XYs, len(results))
-	capacities := make([]int, len(results))
+	values := make(plotter.Values, len(results))
+	labels := make([]string, len(results))
+	labelPoints := make(plotter.XYs, len(results))
+	valueLabels := make([]string, len(results))
+
+	var maxHeap float64
+
 	for index, result := range results {
-		points[index] = plotter.XY{
-			X: float64(result.capacity),
-			Y: float64(result.allocBytes) / bytesPerMiB,
+		heap := float64(result.allocBytes) / bytesPerMiB
+
+		values[index] = heap
+		labels[index] = perfchart.CountLabel(result.capacity)
+		labelPoints[index] = plotter.XY{
+			X: float64(index),
+			Y: heap,
 		}
-		capacities[index] = result.capacity
+		valueLabels[index] = memoryLabel(heap)
+		maxHeap = math.Max(maxHeap, heap)
 	}
 
 	p := perfchart.New(
-		"Memory Consumption",
+		"Memory Usage by Cache Capacity",
 		"Cache capacity",
 		"Live heap (MiB)",
 	)
-	p.X.Scale = plot.LogScale{}
-	p.X.Tick.Marker = perfchart.CapacityTicks(capacities)
-	p.X.Min = float64(capacities[0])
-	p.X.Max = float64(capacities[len(capacities)-1])
-	p.Y.Min = 0
 
-	line, scatter, err := plotter.NewLinePoints(points)
+	const barWidth = 80
+
+	bars, err := plotter.NewBarChart(values, vg.Points(barWidth))
 	if err != nil {
-		return fmt.Errorf("create memory series: %w", err)
+		return fmt.Errorf("create memory bars: %w", err)
 	}
 
-	perfchart.StyleLinePoints(line, scatter, 0)
-	p.Add(line, scatter)
+	bars.Color = perfchart.Color(0)
+	bars.LineStyle.Width = 0
+	p.Add(bars)
+
+	valueLabelPlot, err := plotter.NewLabels(plotter.XYLabels{
+		XYs:    labelPoints,
+		Labels: valueLabels,
+	})
+	if err != nil {
+		return fmt.Errorf("create memory labels: %w", err)
+	}
+
+	valueLabelPlot.Offset = vg.Point{Y: vg.Points(6)}
+	for index := range valueLabelPlot.TextStyle {
+		valueLabelPlot.TextStyle[index].Font.Variant = "Sans"
+		valueLabelPlot.TextStyle[index].Font.Size = vg.Points(10)
+		valueLabelPlot.TextStyle[index].XAlign = draw.XCenter
+		valueLabelPlot.TextStyle[index].YAlign = draw.YBottom
+	}
+	p.Add(valueLabelPlot)
+
+	const groupPadding = 0.55
+
+	p.NominalX(labels...)
+	p.X.Min = -groupPadding
+	p.X.Max = float64(len(results)-1) + groupPadding
+
+	setMemoryYRange(p, maxHeap)
 
 	return perfchart.Save(p, output)
 }
@@ -135,6 +171,25 @@ func readResults(path string) ([]result, error) {
 	})
 
 	return results, nil
+}
+
+func memoryLabel(value float64) string {
+	if value >= 10 {
+		return fmt.Sprintf("%.1f MiB", value)
+	}
+
+	return fmt.Sprintf("%.2f MiB", value)
+}
+
+func setMemoryYRange(p *plot.Plot, maxValue float64) {
+	const tickStep = 20
+
+	padding := math.Max(2, maxValue*0.05)
+	maxTick := int(math.Ceil((maxValue+padding)/tickStep) * tickStep)
+
+	p.Y.Min = 0
+	p.Y.Max = float64(maxTick)
+	p.Y.Tick.Marker = perfchart.IntegerTicks(maxTick, tickStep)
 }
 
 func columnIndex(header []string, name string) (int, error) {

@@ -47,6 +47,7 @@ func run(input, output string) error {
 
 	points := make(plotter.XYs, len(results))
 	capacities := make([]int, len(results))
+
 	for index, result := range results {
 		points[index] = plotter.XY{
 			X: float64(result.capacity),
@@ -56,15 +57,20 @@ func run(input, output string) error {
 	}
 
 	p := perfchart.New(
-		"Hit Ratio",
+		"Hit Ratio by Cache Capacity",
 		"Cache capacity",
 		"Hit ratio (%)",
 	)
 	p.X.Scale = plot.LogScale{}
-	p.X.Tick.Marker = perfchart.CapacityTicks(capacities)
-	p.X.Min = float64(capacities[0])
-	p.X.Max = float64(capacities[len(capacities)-1])
+	p.X.Tick.Marker = perfchart.CountTicks(capacities)
+
+	const xPaddingFactor = 1.15
+
+	p.X.Min = float64(capacities[0]) / xPaddingFactor
+	p.X.Max = float64(capacities[len(capacities)-1]) * xPaddingFactor
 	p.Y.Min = 0
+	p.Y.Max = 50
+	p.Y.Tick.Marker = perfchart.IntegerTicks(50, 10)
 
 	line, scatter, err := plotter.NewLinePoints(points)
 	if err != nil {

@@ -26,9 +26,9 @@ type cacheState[K comparable, V any] struct {
 // with found=false and a nil error is returned to callers but is not cached.
 // Loader errors are never cached.
 //
-// Concurrent misses for the same key are coalesced. The loader runs with the
-// context of the caller that starts the shared load. Other callers may stop
-// waiting independently when their own contexts are canceled.
+// Concurrent misses for the same key are coalesced. The caller that starts the
+// shared load executes the loader synchronously with its context. Other callers
+// may stop waiting independently when their own contexts are canceled.
 //
 // Set, GetOrSet and GetOrSetEntry insertions, and invalidation act as
 // publication barriers for the same key. If a successful loader result is
@@ -128,77 +128,89 @@ func (cache *Cache[K, V]) getOrLoad(
 
 	state := &cache.states[index]
 
-	// Keep singleflight registration ordered with mutations. Do only registers
-	// or starts the shared call; loader I/O and caller waiting run outside
-	// state.mu.
+	// Keep singleflight registration ordered with mutations. The owner executes
+	// loader I/O only after releasing state.mu; duplicate callers wait outside
+	// state.mu as well.
 	state.mu.RLock()
 
-	call := state.group.Do(
-		key,
-		func(callState singleflight.CallState) (loadResult[V], error) {
-			// The cache may have been populated between the initial lookup and
-			// this call becoming the singleflight owner.
-			if cached, ok := cache.store.getEntryAt(index, key, cache.store.now(), stats); ok {
-				return loadResult[V]{
-					value:    cached.value,
-					deadline: cached.deadline,
-					found:    true,
-				}, nil
-			}
-
-			startedAt := cache.store.now()
-
-			value, found, err := loader(ctx)
-
-			finishedAt := cache.store.now()
-
-			cache.stats.recordLoad(index, found, err, time.Duration(finishedAt-startedAt))
-
-			if err != nil {
-				return loadResult[V]{}, err
-			}
-
-			if !found {
-				var zero V
-				value = zero
-			}
-
-			loaded := loadResult[V]{
-				value: value,
-				found: found,
-			}
-
-			var refreshTTL time.Duration
-
-			if found {
-				refreshTTL = cache.effectiveTTL(DefaultExpiration)
-				loaded.deadline = deadlineAfter(finishedAt, refreshTTL)
-			}
-
-			// Publication is ordered with cache mutations. A mutation that
-			// wins first makes this successful load result stale for every waiter,
-			// including a successful found=false result.
-			state.mu.RLock()
-
-			if callState.Forgotten() {
-				state.mu.RUnlock()
-
-				cache.stats.recordLoadSuperseded(index)
-
-				return loadResult[V]{}, ErrLoadSuperseded
-			}
-
-			if loaded.found {
-				cache.store.setAt(index, key, loaded.value, refreshTTL, loaded.deadline, stats)
-			}
-
-			state.mu.RUnlock()
-
-			return loaded, nil
-		},
-	)
+	call, owner := state.group.StartCall(key)
 
 	state.mu.RUnlock()
+
+	if owner {
+		state.group.DoCall(
+			key,
+			call,
+			func(callState singleflight.CallState) (loadResult[V], error) {
+				// The cache may have been populated between the initial lookup and
+				// this call becoming the singleflight owner.
+				if cached, ok := cache.store.getEntryAt(index, key, cache.store.now(), stats); ok {
+					return loadResult[V]{
+						value:    cached.value,
+						deadline: cached.deadline,
+						found:    true,
+					}, nil
+				}
+
+				startedAt := cache.store.now()
+
+				value, found, err := loader(ctx)
+
+				finishedAt := cache.store.now()
+
+				cache.stats.recordLoad(index, found, err, time.Duration(finishedAt-startedAt))
+
+				if err != nil {
+					return loadResult[V]{}, err
+				}
+
+				if !found {
+					var zero V
+					value = zero
+				}
+
+				loaded := loadResult[V]{
+					value: value,
+					found: found,
+				}
+
+				var refreshTTL time.Duration
+
+				if found {
+					refreshTTL = cache.effectiveTTL(DefaultExpiration)
+					loaded.deadline = deadlineAfter(finishedAt, refreshTTL)
+				}
+
+				// Publication is ordered with cache mutations. A mutation that
+				// wins first makes this successful load result stale for every waiter,
+				// including a successful found=false result.
+				state.mu.RLock()
+
+				if callState.Forgotten() {
+					state.mu.RUnlock()
+
+					cache.stats.recordLoadSuperseded(index)
+
+					return loadResult[V]{}, ErrLoadSuperseded
+				}
+
+				if loaded.found {
+					cache.store.setAt(
+						index,
+						key,
+						loaded.value,
+						refreshTTL,
+						loaded.deadline,
+						stats,
+					)
+				}
+
+				state.mu.RUnlock()
+
+				return loaded, nil
+			},
+		)
+	}
 
 	result, err := call.Wait(ctx)
 	if err != nil {

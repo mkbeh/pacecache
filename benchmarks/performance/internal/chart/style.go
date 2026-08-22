@@ -86,7 +86,7 @@ func Color(index int) color.Color {
 	return palette[index%len(palette)]
 }
 
-func CapacityLabel(value int) string {
+func CountLabel(value int) string {
 	switch {
 	case value >= 1_000_000 && value%1_000_000 == 0:
 		return fmt.Sprintf("%dM", value/1_000_000)
@@ -97,14 +97,27 @@ func CapacityLabel(value int) string {
 	}
 }
 
-func CapacityTicks(values []int) plot.ConstantTicks {
+func CountTicks(values []int) plot.ConstantTicks {
 	ticks := make(plot.ConstantTicks, 0, len(values))
 	for _, value := range values {
 		ticks = append(ticks, plot.Tick{
 			Value: float64(value),
-			Label: CapacityLabel(value),
+			Label: CountLabel(value),
 		})
 	}
+	return ticks
+}
+
+func IntegerTicks(maxValue, step int) plot.ConstantTicks {
+	ticks := make(plot.ConstantTicks, 0, maxValue/step+1)
+
+	for value := 0; value <= maxValue; value += step {
+		ticks = append(ticks, plot.Tick{
+			Value: float64(value),
+			Label: fmt.Sprintf("%d", value),
+		})
+	}
+
 	return ticks
 }
 

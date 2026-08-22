@@ -34,18 +34,22 @@ func (cache *Cache[K, V]) Set(
 	state := &cache.states[index]
 
 	state.mu.Lock()
-
 	state.group.Forget(key)
 
-	now := cache.store.now()
 	refreshTTL := cache.effectiveTTL(expiration)
+
+	var deadline int64
+
+	if refreshTTL > 0 {
+		deadline = deadlineAfter(cache.store.now(), refreshTTL)
+	}
 
 	cache.store.setAt(
 		index,
 		key,
 		value,
 		refreshTTL,
-		deadlineAfter(now, refreshTTL),
+		deadline,
 		cache.stats.segment(index),
 	)
 
