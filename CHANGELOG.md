@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## v1.0.2 - 2026-08-22
+
+This patch release improves memory efficiency, non-expiring write performance, and loader coordination under concurrent
+cache updates.
+
+### Added
+
+* **Cold-Fill Benchmark:** Added dedicated coverage for cache construction and full population to measure cold-start
+  performance and allocation growth.
+
+### Changed
+
+* **Memory Efficiency:** Removed eager entry-map preallocation based on `MaxEntries`, so memory usage now scales with
+  actual cache occupancy rather than the configured entry limit.
+* **Non-Expiring Writes:** Skip unnecessary clock reads and deadline calculation when storing entries without time-based
+  expiration.
+* **Performance Benchmarks:** Refreshed throughput, hit-ratio, and memory results and redesigned benchmark charts for
+  clearer comparison across cache sizes and workload mixes.
+
+### Fixed
+
+* **Loader Publication Ordering:** Prevented superseded in-flight `GetOrLoad` results from overwriting newer cache state
+  or being published to waiting callers after a concurrent cache mutation wins the publication race.
+
 ## v1.0.1 - 2026-08-21
 
 This patch release focuses on reducing garbage collector scan work and improving benchmark stability.

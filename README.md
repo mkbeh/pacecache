@@ -17,13 +17,13 @@ The library provides an intuitive API with predictable behavior under high concu
 
 ## Features
 
-* **Built for Concurrency:** Segmented storage scales across concurrent workloads.
+* **Concurrency:** Segmented storage scales across concurrent workloads.
 * **Generic API:** Type-safe caching with comparable keys and arbitrary value types.
-* **Bounded LRU Eviction:** Exact per-segment LRU within a fixed total capacity.
-* **Flexible Expiration:** Default and per-entry TTLs, jitter, sliding expiration, refresh, and no-expiration entries.
-* **Expiration Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
-* **Cache-Aside Loading:** Coalesces concurrent misses for the same key into a single load.
-* **Concurrency-Safe Updates:** Publication barriers prevent stale loads from overwriting newer cache state.
+* **Bounded LRU:** Exact per-segment LRU within a fixed total capacity.
+* **Expiration:** Default and per-entry TTLs, jitter, sliding expiration, refresh, and no-expiration entries.
+* **Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
+* **Cache-Aside:** Coalesces concurrent misses for the same key into a single load.
+* **Safe Updates:** Publication barriers prevent stale loads from overwriting newer cache state.
 * **Observability:** Built-in statistics with optional OpenTelemetry metrics.
 
 ## Installation
@@ -238,7 +238,7 @@ Measures how cache capacity affects hit ratio under a Zipfian access pattern.
 
 ![Hit Ratio](./benchmarks/performance/hitratio/assets/hit-ratio.png)
 
-### Memory Consumption
+### Memory
 
 Measures live heap consumption after populating the cache with fixed-size keys and values.
 
