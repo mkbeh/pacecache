@@ -133,11 +133,11 @@ func (cache *Cache[K, V]) getOrLoad(
 	// state.mu as well.
 	state.mu.RLock()
 
-	call, shouldLoad := state.group.StartCall(key)
+	call, owner := state.group.StartCall(key)
 
 	state.mu.RUnlock()
 
-	if shouldLoad {
+	if owner {
 		state.group.DoCall(
 			key,
 			call,

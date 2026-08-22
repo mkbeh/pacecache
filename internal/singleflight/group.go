@@ -1,11 +1,3 @@
-// Copyright 2013 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
-// Adapted from golang.org/x/sync/singleflight to support generic key and value
-// types, per-call publication state, caller cancellation, and one shared
-// completion signal per call wave.
-
 // Package singleflight provides a duplicate function call suppression
 // mechanism.
 package singleflight
@@ -135,9 +127,9 @@ type Group[K comparable, V any] struct {
 
 // StartCall joins the active wave for key or registers a new one.
 //
-// shouldLoad is true only for the caller responsible for executing the shared
+// owner is true only for the caller responsible for executing the shared
 // work with DoCall.
-func (group *Group[K, V]) StartCall(key K) (handle Call[V], shouldLoad bool) {
+func (group *Group[K, V]) StartCall(key K) (handle Call[V], owner bool) {
 	group.mu.Lock()
 
 	if group.m == nil {
