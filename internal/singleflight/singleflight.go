@@ -4,7 +4,7 @@
 
 // Adapted from golang.org/x/sync/singleflight to support generic key and value
 // types, per-call publication state, caller cancellation, and one shared
-// completion signal per asynchronous call wave.
+// completion signal per call wave.
 
 // Package singleflight provides a duplicate function call suppression
 // mechanism.
@@ -47,9 +47,8 @@ func (panicErr *panicError) Unwrap() error {
 func newPanicError(value any) *panicError {
 	stack := debug.Stack()
 
-	// The first line is "goroutine N [status]:". By the time another caller
-	// observes the panic that goroutine may no longer exist, so avoid retaining
-	// a misleading status line.
+	// The first line is "goroutine N [status]:", which is not useful when the
+	// panic is later observed through a shared call handle.
 	if line := bytes.IndexByte(stack, '\n'); line >= 0 {
 		stack = stack[line+1:]
 	}
@@ -78,14 +77,15 @@ type Result[V any] struct {
 
 // Call is a lightweight handle to one singleflight wave.
 //
-// Every caller in the same wave waits on one shared completion signal. Waiting
-// may be canceled independently without canceling the worker or other callers.
+// Every caller in the same wave observes one shared completion signal. Waiting
+// callers may stop waiting independently when their contexts are canceled.
 type Call[V any] struct {
 	call *call[V]
 }
 
-// Wait waits for the shared result or for ctx to be canceled. Panics and
-// runtime.Goexit from the worker are propagated in the waiting caller.
+// Wait waits for the shared result or for ctx to be canceled. A panic or
+// runtime.Goexit from the owner is propagated to every caller that waits for
+// the shared result.
 func (handle Call[V]) Wait(ctx context.Context) (Result[V], error) {
 	current := handle.call
 	if current == nil {
@@ -121,7 +121,7 @@ type call[V any] struct {
 	err error
 
 	// dups is mutated while Group.mu is held before completion. forgotten may
-	// be set by Forget or ForgetAll while the worker is executing.
+	// be set by Forget or ForgetAll while the owner is executing.
 	dups      uint32
 	forgotten atomic.Bool
 }
@@ -133,52 +133,11 @@ type Group[K comparable, V any] struct {
 	m  map[K]*call[V]
 }
 
-// Do joins the active wave for key or starts one asynchronous worker.
+// StartCall joins the active wave for key or registers a new one.
 //
-// Do only registers the caller and returns a Call handle. The caller should
-// wait with Call.Wait after releasing any external lock that protects
-// registration ordering. Panics from fn are recovered by the worker and
-// propagated by Wait in the waiting caller.
-func (group *Group[K, V]) Do(
-	key K,
-	fn func(CallState) (V, error),
-) Call[V] {
-	current, owner := group.register(key)
-	if owner {
-		go group.doCall(key, current, fn)
-	}
-
-	return Call[V]{call: current}
-}
-
-// Forget marks the active call for key as superseded and removes it from the
-// group. Existing callers still finish their current wave; a later Do for the
-// same key starts a new wave.
-func (group *Group[K, V]) Forget(key K) {
-	group.mu.Lock()
-
-	if current := group.m[key]; current != nil {
-		current.forgotten.Store(true)
-		delete(group.m, key)
-	}
-
-	group.mu.Unlock()
-}
-
-// ForgetAll marks every active call as superseded and removes it from the
-// group. Existing callers still finish their current waves.
-func (group *Group[K, V]) ForgetAll() {
-	group.mu.Lock()
-
-	for key, current := range group.m {
-		current.forgotten.Store(true)
-		delete(group.m, key)
-	}
-
-	group.mu.Unlock()
-}
-
-func (group *Group[K, V]) register(key K) (*call[V], bool) {
+// shouldLoad is true only for the caller responsible for executing the shared
+// work with DoCall.
+func (group *Group[K, V]) StartCall(key K) (handle Call[V], shouldLoad bool) {
 	group.mu.Lock()
 
 	if group.m == nil {
@@ -189,28 +148,40 @@ func (group *Group[K, V]) register(key K) (*call[V], bool) {
 		current.dups++
 		group.mu.Unlock()
 
-		return current, false
+		return Call[V]{call: current}, false
 	}
 
-	current := &call[V]{done: make(chan struct{})}
+	current := &call[V]{
+		done: make(chan struct{}),
+	}
 	group.m[key] = current
 
 	group.mu.Unlock()
 
-	return current, true
+	return Call[V]{call: current}, true
 }
 
-func (group *Group[K, V]) doCall(
+// DoCall executes the shared work synchronously for a call returned by
+// StartCall with shouldLoad=true.
+//
+// DoCall must be called exactly once for the owner call. Panics are captured so
+// every caller in the wave can observe the same panic through Wait.
+// runtime.Goexit completes the wave before terminating the executing goroutine.
+func (group *Group[K, V]) DoCall(
 	key K,
-	current *call[V],
+	handle Call[V],
 	fn func(CallState) (V, error),
 ) {
+	current := handle.call
+	if current == nil {
+		panic("singleflight: DoCall called with zero Call")
+	}
+
 	normalReturn := false
 	panicRecovered := false
 
 	// Double defer distinguishes panic from runtime.Goexit. Cleanup always runs
-	// before the worker completes. Panics are stored on the call and propagated
-	// by Wait in the waiting caller instead of escaping from this goroutine.
+	// before the call completes.
 	defer func() {
 		if !normalReturn && !panicRecovered {
 			current.err = errGoexit
@@ -237,6 +208,33 @@ func (group *Group[K, V]) doCall(
 	if !normalReturn {
 		panicRecovered = true
 	}
+}
+
+// Forget marks the active call for key as superseded and removes it from the
+// group. Existing callers still finish their current wave; a later call for the
+// same key starts a new wave.
+func (group *Group[K, V]) Forget(key K) {
+	group.mu.Lock()
+
+	if current := group.m[key]; current != nil {
+		current.forgotten.Store(true)
+		delete(group.m, key)
+	}
+
+	group.mu.Unlock()
+}
+
+// ForgetAll marks every active call as superseded and removes it from the
+// group. Existing callers still finish their current waves.
+func (group *Group[K, V]) ForgetAll() {
+	group.mu.Lock()
+
+	for key, current := range group.m {
+		current.forgotten.Store(true)
+		delete(group.m, key)
+	}
+
+	group.mu.Unlock()
 }
 
 func (group *Group[K, V]) finish(key K, current *call[V]) {
