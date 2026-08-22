@@ -15,9 +15,9 @@ const singleflightTestTimeout = 5 * time.Second
 func TestStartCallAndDoCallReturnValue(t *testing.T) {
 	var group Group[string, int]
 
-	call, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("StartCall() shouldLoad = false, want true")
+	call, owner := group.StartCall("key")
+	if !owner {
+		t.Fatal("StartCall() owner = false, want true")
 	}
 
 	group.DoCall("key", call, func(state CallState) (int, error) {
@@ -34,13 +34,53 @@ func TestStartCallAndDoCallReturnValue(t *testing.T) {
 	}
 }
 
+func TestDoCallRunsSynchronously(t *testing.T) {
+	var group Group[string, int]
+
+	call, owner := group.StartCall("key")
+	if !owner {
+		t.Fatal("StartCall() owner = false, want true")
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	returned := make(chan struct{})
+
+	go func() {
+		group.DoCall("key", call, func(CallState) (int, error) {
+			close(started)
+			<-release
+
+			return 42, nil
+		})
+
+		close(returned)
+	}()
+
+	waitClosed(t, started)
+
+	select {
+	case <-returned:
+		t.Fatal("DoCall returned before the shared work completed")
+	default:
+	}
+
+	close(release)
+	waitClosed(t, returned)
+
+	result, err := call.Wait(context.Background())
+	if err != nil || result.Err != nil || result.Val != 42 || result.Shared {
+		t.Fatalf("result = %+v, wait error = %v, want value=42 shared=false", result, err)
+	}
+}
+
 func TestDoCallReturnsLoaderError(t *testing.T) {
 	var group Group[string, int]
 
 	wantErr := errors.New("load failed")
-	call, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("StartCall() shouldLoad = false, want true")
+	call, owner := group.StartCall("key")
+	if !owner {
+		t.Fatal("StartCall() owner = false, want true")
 	}
 
 	group.DoCall("key", call, func(CallState) (int, error) {
@@ -62,8 +102,8 @@ func TestStartCallSuppressesConcurrentCallers(t *testing.T) {
 	const callers = 256
 
 	type registration struct {
-		call       Call[int]
-		shouldLoad bool
+		call  Call[int]
+		owner bool
 	}
 
 	start := make(chan struct{})
@@ -77,10 +117,10 @@ func TestStartCallSuppressesConcurrentCallers(t *testing.T) {
 			defer waiters.Done()
 			<-start
 
-			call, shouldLoad := group.StartCall("key")
+			call, owner := group.StartCall("key")
 			registrations <- registration{
-				call:       call,
-				shouldLoad: shouldLoad,
+				call:  call,
+				owner: owner,
 			}
 		}()
 	}
@@ -90,15 +130,15 @@ func TestStartCallSuppressesConcurrentCallers(t *testing.T) {
 	close(registrations)
 
 	var (
-		owner      Call[int]
+		ownerCall  Call[int]
 		allCalls   []Call[int]
 		ownerCount int
 	)
 
 	for registered := range registrations {
 		allCalls = append(allCalls, registered.call)
-		if registered.shouldLoad {
-			owner = registered.call
+		if registered.owner {
+			ownerCall = registered.call
 			ownerCount++
 		}
 	}
@@ -108,7 +148,7 @@ func TestStartCallSuppressesConcurrentCallers(t *testing.T) {
 	}
 
 	var loaderCalls atomic.Int64
-	group.DoCall("key", owner, func(CallState) (int, error) {
+	group.DoCall("key", ownerCall, func(CallState) (int, error) {
 		loaderCalls.Add(1)
 		return 42, nil
 	})
@@ -131,21 +171,21 @@ func TestStartCallKeepsDifferentKeysIndependent(t *testing.T) {
 	const keys = 64
 
 	for key := range keys {
-		owner, shouldLoad := group.StartCall(key)
-		if !shouldLoad {
-			t.Fatalf("key %d owner shouldLoad = false", key)
+		ownerCall, owner := group.StartCall(key)
+		if !owner {
+			t.Fatalf("key %d owner = false", key)
 		}
 
-		duplicate, duplicateShouldLoad := group.StartCall(key)
-		if duplicateShouldLoad {
-			t.Fatalf("key %d duplicate shouldLoad = true", key)
+		duplicate, duplicateOwner := group.StartCall(key)
+		if duplicateOwner {
+			t.Fatalf("key %d duplicate owner = true", key)
 		}
 
-		group.DoCall(key, owner, func(CallState) (int, error) {
+		group.DoCall(key, ownerCall, func(CallState) (int, error) {
 			return key, nil
 		})
 
-		for _, call := range []Call[int]{owner, duplicate} {
+		for _, call := range []Call[int]{ownerCall, duplicate} {
 			result, err := call.Wait(context.Background())
 			if err != nil || result.Err != nil || result.Val != key || !result.Shared {
 				t.Fatalf("key %d result = %+v, wait error = %v", key, result, err)
@@ -157,13 +197,13 @@ func TestStartCallKeepsDifferentKeysIndependent(t *testing.T) {
 func TestWaitCancellationDoesNotCancelWave(t *testing.T) {
 	var group Group[string, int]
 
-	owner, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("owner shouldLoad = false")
+	ownerCall, owner := group.StartCall("key")
+	if !owner {
+		t.Fatal("owner call owner = false")
 	}
-	waiter, shouldLoad := group.StartCall("key")
-	if shouldLoad {
-		t.Fatal("waiter shouldLoad = true")
+	waiter, waiterOwner := group.StartCall("key")
+	if waiterOwner {
+		t.Fatal("waiter owner = true")
 	}
 
 	started := make(chan struct{})
@@ -173,7 +213,7 @@ func TestWaitCancellationDoesNotCancelWave(t *testing.T) {
 	go func() {
 		defer close(ownerDone)
 
-		group.DoCall("key", owner, func(CallState) (int, error) {
+		group.DoCall("key", ownerCall, func(CallState) (int, error) {
 			close(started)
 			<-release
 
@@ -190,10 +230,16 @@ func TestWaitCancellationDoesNotCancelWave(t *testing.T) {
 		t.Fatalf("Wait() error = %v, want context.Canceled", err)
 	}
 
+	select {
+	case <-ownerDone:
+		t.Fatal("waiter cancellation completed the owner wave")
+	default:
+	}
+
 	close(release)
 	waitClosed(t, ownerDone)
 
-	result, err := owner.Wait(context.Background())
+	result, err := ownerCall.Wait(context.Background())
 	if err != nil || result.Err != nil || result.Val != 42 || !result.Shared {
 		t.Fatalf("owner result = %+v, wait error = %v", result, err)
 	}
@@ -202,16 +248,16 @@ func TestWaitCancellationDoesNotCancelWave(t *testing.T) {
 func TestForgetMarksOldWaveAndStartsNewWave(t *testing.T) {
 	var group Group[string, int]
 
-	oldCall, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("old call shouldLoad = false")
+	oldCall, oldOwner := group.StartCall("key")
+	if !oldOwner {
+		t.Fatal("old call owner = false")
 	}
 
 	group.Forget("key")
 
-	newCall, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("new call shouldLoad = false")
+	newCall, newOwner := group.StartCall("key")
+	if !newOwner {
+		t.Fatal("new call owner = false")
 	}
 
 	newStarted := make(chan struct{})
@@ -245,8 +291,8 @@ func TestForgetMarksOldWaveAndStartsNewWave(t *testing.T) {
 		t.Fatal("old wave did not observe Forget")
 	}
 
-	joinedNew, shouldLoad := group.StartCall("key")
-	if shouldLoad {
+	joinedNew, joinedOwner := group.StartCall("key")
+	if joinedOwner {
 		t.Fatal("old wave completion removed the new active wave")
 	}
 
@@ -269,9 +315,9 @@ func TestForgetMarksOldWaveAndStartsNewWave(t *testing.T) {
 func TestForgetAllMarksEveryActiveWave(t *testing.T) {
 	var group Group[string, int]
 
-	first, firstShouldLoad := group.StartCall("first")
-	second, secondShouldLoad := group.StartCall("second")
-	if !firstShouldLoad || !secondShouldLoad {
+	first, firstOwner := group.StartCall("first")
+	second, secondOwner := group.StartCall("second")
+	if !firstOwner || !secondOwner {
 		t.Fatal("initial calls must both be owners")
 	}
 
@@ -308,20 +354,20 @@ func TestPanicPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 
 	wantErr := errors.New("boom")
 
-	owner, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("owner shouldLoad = false")
+	ownerCall, owner := group.StartCall("key")
+	if !owner {
+		t.Fatal("owner call owner = false")
 	}
-	waiter, shouldLoad := group.StartCall("key")
-	if shouldLoad {
-		t.Fatal("waiter shouldLoad = true")
+	waiter, waiterOwner := group.StartCall("key")
+	if waiterOwner {
+		t.Fatal("waiter owner = true")
 	}
 
-	group.DoCall("key", owner, func(CallState) (int, error) {
+	group.DoCall("key", ownerCall, func(CallState) (int, error) {
 		panic(wantErr)
 	})
 
-	for index, call := range []Call[int]{owner, waiter} {
+	for index, call := range []Call[int]{ownerCall, waiter} {
 		var recovered any
 
 		func() {
@@ -339,8 +385,8 @@ func TestPanicPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 		assertPanicError(t, recovered, wantErr)
 	}
 
-	next, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
+	next, nextOwner := group.StartCall("key")
+	if !nextOwner {
 		t.Fatal("panicking wave remained registered")
 	}
 
@@ -357,13 +403,13 @@ func TestPanicPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 func TestGoexitPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 	var group Group[string, int]
 
-	owner, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
-		t.Fatal("owner shouldLoad = false")
+	ownerCall, owner := group.StartCall("key")
+	if !owner {
+		t.Fatal("owner call owner = false")
 	}
-	waiter, shouldLoad := group.StartCall("key")
-	if shouldLoad {
-		t.Fatal("waiter shouldLoad = true")
+	waiter, waiterOwner := group.StartCall("key")
+	if waiterOwner {
+		t.Fatal("waiter owner = true")
 	}
 
 	doCallDone := make(chan struct{})
@@ -372,7 +418,7 @@ func TestGoexitPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 	go func() {
 		defer close(doCallDone)
 
-		group.DoCall("key", owner, func(CallState) (int, error) {
+		group.DoCall("key", ownerCall, func(CallState) (int, error) {
 			runtime.Goexit()
 			return 0, nil
 		})
@@ -386,7 +432,7 @@ func TestGoexitPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 		t.Fatal("DoCall returned after runtime.Goexit")
 	}
 
-	for index, call := range []Call[int]{owner, waiter} {
+	for index, call := range []Call[int]{ownerCall, waiter} {
 		done := make(chan struct{})
 		var returned atomic.Bool
 
@@ -404,8 +450,8 @@ func TestGoexitPropagatesToEveryWaiterAndCleansUp(t *testing.T) {
 		}
 	}
 
-	next, shouldLoad := group.StartCall("key")
-	if !shouldLoad {
+	next, nextOwner := group.StartCall("key")
+	if !nextOwner {
 		t.Fatal("Goexit wave remained registered")
 	}
 
