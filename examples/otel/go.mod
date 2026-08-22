@@ -3,7 +3,7 @@ module otel
 go 1.26
 
 require (
-	github.com/mkbeh/pacecache v1.0.1
+	github.com/mkbeh/pacecache v1.0.2
 	github.com/mkbeh/pacecache/extra/paceotel v1.0.1
 	go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.45.0
 	go.opentelemetry.io/otel/sdk/metric v1.45.0
