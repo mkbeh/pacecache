@@ -108,7 +108,7 @@ jobs:
         env:
           GOWORK: ${{ github.workspace }}/go.work
         with:
-          version: v2.12.2
+          version: v2.13.1
           working-directory: ${{ matrix.module }}
           args: >-
             --config=${{ github.workspace }}/.golangci.yml
