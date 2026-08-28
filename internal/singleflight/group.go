@@ -89,9 +89,11 @@ func (handle Call[V]) Wait(ctx context.Context) (Result[V], error) {
 		return Result[V]{}, ctx.Err()
 
 	case <-current.done:
-		if panicErr, ok := current.err.(*panicError); ok {
+
+		if panicErr, ok := errors.AsType[*panicError](current.err); ok {
 			panic(panicErr)
 		}
+
 		if errors.Is(current.err, errGoexit) {
 			runtime.Goexit()
 		}
