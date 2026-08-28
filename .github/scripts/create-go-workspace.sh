@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="${GITHUB_WORKSPACE:-$(pwd)}"
+if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
+  root="${GITHUB_WORKSPACE}"
+else
+  root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+
 include_examples=false
 include_benchmarks=false
 
@@ -26,9 +31,9 @@ rm -f go.work go.work.sum
 
 modules=(.)
 
-if [[ -f ./extra/paceotel/go.mod ]]; then
-  modules+=(./extra/paceotel)
-fi
+while IFS= read -r -d '' mod; do
+  modules+=("$(dirname "${mod}")")
+done < <(find ./extra -name go.mod -type f -print0 2>/dev/null | sort -z)
 
 if [[ "${include_examples}" == "true" ]]; then
   while IFS= read -r -d '' mod; do
@@ -45,7 +50,7 @@ fi
 # The workspace is ephemeral in CI and local-only for development.
 GOWORK=off go work init "${modules[@]}"
 
-# Local modules may already require release versions such as v0.1.0 while the
+# Local modules may already require release versions such as v1.0.0 while the
 # corresponding tags do not exist yet. Bind those exact requirements to the
 # current checkout so all Go tooling, including go/packages-based linters,
 # resolves the unpublished modules locally.
@@ -77,7 +82,15 @@ done < <(
   } |
   while IFS= read -r -d '' mod; do
     awk '
-      $1 ~ /^github\.com\/mkbeh\/pacecache(\/.*)?$/ && $2 ~ /^v[0-9]/ {
+      $1 == "require" &&
+      $2 ~ /^github\.com\/mkbeh\/pacecache(\/.*)?$/ &&
+      $3 ~ /^v[0-9]/ {
+        print $2, $3
+        next
+      }
+
+      $1 ~ /^github\.com\/mkbeh\/pacecache(\/.*)?$/ &&
+      $2 ~ /^v[0-9]/ {
         print $1, $2
       }
     ' "${mod}"

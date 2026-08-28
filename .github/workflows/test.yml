@@ -35,6 +35,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache-dependency-path: |
+            go.sum
             extra/**/go.sum
             examples/**/go.sum
 
@@ -77,6 +78,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache-dependency-path: |
+            go.sum
             extra/**/go.sum
             examples/**/go.sum
 

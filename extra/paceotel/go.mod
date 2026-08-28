@@ -1,6 +1,6 @@
 module github.com/mkbeh/pacecache/extra/paceotel
 
-go 1.26
+go 1.27
 
 require (
 	github.com/mkbeh/pacecache v1.0.0

@@ -2,7 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
-## v1.0.2 - 2026-08-22
+## v1.1.0
+
+This release establishes Go 1.27 as the new compatibility baseline for `pacecache`.
+
+### Changed
+
+* **Go Toolchain:** Raised the minimum supported Go version to 1.27 and updated project tooling accordingly.
+
+## extra/paceotel/v1.1.0
+
+This release aligns `paceotel` with the Go 1.27 baseline and `pacecache` v1.1.0.
+
+### Changed
+
+* **Go Toolchain:** Raised the minimum supported Go version to 1.27.
+* **Core Dependency:** Updated `github.com/mkbeh/pacecache` to v1.1.0.
+
+## v1.0.2
 
 This patch release improves memory efficiency, non-expiring write performance, and loader coordination under concurrent
 cache updates.
@@ -26,7 +43,7 @@ cache updates.
 * **Loader Publication Ordering:** Prevented superseded in-flight `GetOrLoad` results from overwriting newer cache state
   or being published to waiting callers after a concurrent cache mutation wins the publication race.
 
-## v1.0.1 - 2026-08-21
+## v1.0.1
 
 This patch release focuses on reducing garbage collector scan work and improving benchmark stability.
 
@@ -37,7 +54,7 @@ This patch release focuses on reducing garbage collector scan work and improving
 * **Stable Benchmarks:** Fixed rare per-segment evictions during benchmark population caused by randomized hash
   distribution.
 
-## v1.0.0 - 2026-08-21
+## v1.0.0
 
 Initial production release of the core `pacecache` module.
 
@@ -59,9 +76,7 @@ Initial production release of the core `pacecache` module.
 * **Tooling:** Performance benchmarks covering throughput, hit ratio, and memory consumption, together with runnable
   basic and OpenTelemetry examples.
 
----
-
-## extra/paceotel/v1.0.1 - 2026-08-21
+## extra/paceotel/v1.0.1
 
 Initial release of the `paceotel` extension module.
 
