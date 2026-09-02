@@ -30,9 +30,9 @@ type cacheState[K comparable, V any] struct {
 // shared load executes the loader synchronously with its context. Other callers
 // may stop waiting independently when their own contexts are canceled.
 //
-// Set, GetOrSet and GetOrSetEntry insertions, and invalidation act as
-// publication barriers for the same key. If a successful loader result is
-// superseded by a newer cache mutation before publication, GetOrLoad discards
+// Set, GetOrSet and GetOrSetEntry insertions, Delete, and Clear act as
+// publication barriers for the affected key or keys. If a successful loader
+// result is superseded by a newer cache mutation before publication, GetOrLoad discards
 // the loader result and returns ErrLoadSuperseded. Loader errors take precedence
 // over ErrLoadSuperseded. Mutations of other keys do not affect the load, even
 // when those keys share the same segment.

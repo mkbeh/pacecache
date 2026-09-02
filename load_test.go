@@ -475,12 +475,12 @@ func TestGetOrLoadSetSameKeySupersedesInflightFoundLoad(t *testing.T) {
 	}
 }
 
-func TestGetOrLoadInvalidateSameKeySupersedesInflightFoundLoad(t *testing.T) {
+func TestGetOrLoadDeleteSameKeySupersedesInflightFoundLoad(t *testing.T) {
 	cache := newPublicationTestCache(t)
 	started, release, result := startPublicationLoad(cache, "key", "old", true, nil)
 
 	waitTestSignal(t, started)
-	cache.Invalidate("key")
+	cache.Delete("key")
 	close(release)
 
 	assertPublicationSuperseded(t, receiveTestValue(t, result))
@@ -490,8 +490,8 @@ func TestGetOrLoadInvalidateSameKeySupersedesInflightFoundLoad(t *testing.T) {
 	if stats.LoadFoundCount != 1 || stats.LoadSupersededCount != 1 {
 		t.Fatalf("load stats = %+v, want found=1 superseded=1", stats)
 	}
-	if stats.InvalidatedKeyCount != 0 {
-		t.Fatalf("InvalidatedKeyCount = %d, want 0 for missing resident key", stats.InvalidatedKeyCount)
+	if stats.DeletedEntryCount != 0 {
+		t.Fatalf("DeletedEntryCount = %d, want 0 for missing resident key", stats.DeletedEntryCount)
 	}
 }
 
@@ -512,12 +512,12 @@ func TestGetOrLoadSetSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
 	}
 }
 
-func TestGetOrLoadInvalidateSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
+func TestGetOrLoadDeleteSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
 	cache := newPublicationTestCache(t)
 	started, release, result := startPublicationLoad(cache, "key", "ignored", false, nil)
 
 	waitTestSignal(t, started)
-	cache.Invalidate("key")
+	cache.Delete("key")
 	close(release)
 
 	assertPublicationSuperseded(t, receiveTestValue(t, result))
@@ -535,7 +535,7 @@ func TestGetOrLoadLoaderErrorPrecedesSuperseded(t *testing.T) {
 	started, release, result := startPublicationLoad(cache, "key", "ignored", false, sentinel)
 
 	waitTestSignal(t, started)
-	cache.Invalidate("key")
+	cache.Delete("key")
 	close(release)
 
 	loaded := receiveTestValue(t, result)
@@ -562,13 +562,13 @@ func TestGetOrLoadSetOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
 	assertCachedValue(t, cache, "key-2", "other")
 }
 
-func TestGetOrLoadInvalidateOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
+func TestGetOrLoadDeleteOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
 	cache := newPublicationTestCache(t)
 	cache.Set("key-2", "other", NoExpiration)
 	started, release, result := startPublicationLoad(cache, "key-1", "loaded", true, nil)
 
 	waitTestSignal(t, started)
-	cache.Invalidate("key-2")
+	cache.Delete("key-2")
 	close(release)
 
 	assertPublicationSuccess(t, receiveTestValue(t, result), "loaded")
@@ -576,21 +576,21 @@ func TestGetOrLoadInvalidateOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
 	assertCacheMiss(t, cache, "key-2")
 }
 
-func TestGetOrLoadBatchInvalidateOtherKeysSameSegmentDoesNotSupersede(t *testing.T) {
+func TestGetOrLoadBatchDeleteOtherKeysSameSegmentDoesNotSupersede(t *testing.T) {
 	cache := newPublicationTestCache(t)
 	cache.Set("key-2", "other-2", NoExpiration)
 	cache.Set("key-3", "other-3", NoExpiration)
 	started, release, result := startPublicationLoad(cache, "key-1", "loaded", true, nil)
 
 	waitTestSignal(t, started)
-	cache.Invalidate("key-2", "key-3", "missing")
+	cache.Delete("key-2", "key-3", "missing")
 	close(release)
 
 	assertPublicationSuccess(t, receiveTestValue(t, result), "loaded")
 	assertCachedValue(t, cache, "key-1", "loaded")
 }
 
-func TestGetOrLoadInvalidateAllSupersedesAllInflightLoads(t *testing.T) {
+func TestGetOrLoadClearSupersedesAllInflightLoads(t *testing.T) {
 	cache := newPublicationTestCache(t)
 
 	firstStarted, firstRelease, firstResult := startPublicationLoad(cache, "first", "one", true, nil)
@@ -599,7 +599,7 @@ func TestGetOrLoadInvalidateAllSupersedesAllInflightLoads(t *testing.T) {
 	waitTestSignal(t, firstStarted)
 	waitTestSignal(t, secondStarted)
 
-	cache.InvalidateAll()
+	cache.Clear()
 	close(firstRelease)
 	close(secondRelease)
 

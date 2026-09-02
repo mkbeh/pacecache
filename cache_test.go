@@ -46,9 +46,9 @@ func TestZeroValueCacheIsSafe(t *testing.T) {
 	}
 
 	cache.Set("key", 1, DefaultExpiration)
-	cache.Invalidate()
-	cache.Invalidate("key")
-	cache.InvalidateAll()
+	cache.Delete()
+	cache.Delete("key")
+	cache.Clear()
 	cache.Close()
 
 	if got := cache.Stats(); got != (Stats{}) {
@@ -174,12 +174,12 @@ func TestCacheSupportsInt64Keys(t *testing.T) {
 		t.Fatalf("Get(42) = (%q, %t), want (Ada, true)", value, found)
 	}
 
-	cache.Invalidate(42)
+	cache.Delete(42)
 	if cache.Exists(42) || cache.RefreshTTL(42) {
-		t.Fatal("int64 key remains after Invalidate")
+		t.Fatal("int64 key remains after Delete")
 	}
 	if _, found := cache.Get(42); found {
-		t.Fatal("Get(42) hit after Invalidate")
+		t.Fatal("Get(42) hit after Delete")
 	}
 }
 
@@ -202,9 +202,9 @@ func TestCacheSupportsComparableStructKeys(t *testing.T) {
 		t.Fatalf("Get(equal) = (%d, %t), want (100, true)", value, found)
 	}
 
-	cache.Invalidate(equal)
+	cache.Delete(equal)
 	if _, found := cache.Get(stored); found {
-		t.Fatal("equal-key Invalidate did not remove stored key")
+		t.Fatal("equal-key Delete did not remove stored key")
 	}
 }
 

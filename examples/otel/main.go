@@ -103,10 +103,10 @@ func run(ctx context.Context) error {
 		}
 	}
 
-	users.Invalidate(42)
+	users.Delete(42)
 
 	if _, found, err := loadUser(42); err != nil {
-		return fmt.Errorf("reload invalidated user: %w", err)
+		return fmt.Errorf("reload deleted user: %w", err)
 	} else if !found {
 		return fmt.Errorf("reloaded user 42 was not found")
 	}

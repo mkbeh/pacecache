@@ -109,20 +109,20 @@ func run(ctx context.Context) error {
 	fmt.Printf("- second lookup: found=%t\n", found)
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
-	// Explicit invalidation forces the next lookup to reload the value.
-	users.Invalidate(42)
+	// Explicit deletion forces the next lookup to reload the value.
+	users.Delete(42)
 
 	reloaded, found, err := loadUser(42)
 	if err != nil {
-		return fmt.Errorf("reload invalidated user: %w", err)
+		return fmt.Errorf("reload deleted user: %w", err)
 	}
 	if !found {
 		return fmt.Errorf("reloaded user 42 was not found")
 	}
 
 	fmt.Println()
-	fmt.Println("invalidation:")
-	fmt.Printf("- lookup after invalidation: found=%t user=%+v\n", found, reloaded)
+	fmt.Println("deletion:")
+	fmt.Printf("- lookup after deletion: found=%t user=%+v\n", found, reloaded)
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	stats := users.Stats()
@@ -142,8 +142,8 @@ func run(ctx context.Context) error {
 		stats.LoadErrorCount,
 	)
 	fmt.Printf(
-		"- invalidated_keys=%d evictions=%d expirations=%d\n",
-		stats.InvalidatedKeyCount,
+		"- deleted_entries=%d evictions=%d expirations=%d\n",
+		stats.DeletedEntryCount,
 		stats.EvictionCount,
 		stats.ExpirationCount,
 	)

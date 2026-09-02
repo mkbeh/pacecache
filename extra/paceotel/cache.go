@@ -21,7 +21,7 @@ const (
 	loadTimeMetricName                  = "pacecache.load.time"
 	loadSharedCountMetricName           = "pacecache.load.shared.count"
 	loadSupersededCountMetricName       = "pacecache.load.superseded.count"
-	invalidationCountMetricName         = "pacecache.entry.invalidation.count"
+	removedCountMetricName              = "pacecache.entry.removed.count"
 	cleanupCountMetricName              = "pacecache.cleanup.count"
 	cleanupWorkerRunCountMetricName     = "pacecache.cleanup.worker.run.count"
 	cleanupWorkerPendingCountMetricName = "pacecache.cleanup.worker.pending.count"
@@ -31,10 +31,10 @@ const (
 )
 
 const (
-	cacheNameAttribute         = "pacecache.name"
-	lookupResultAttribute      = "pacecache.lookup.result"
-	loadResultAttribute        = "pacecache.load.result"
-	invalidationScopeAttribute = "pacecache.invalidation.scope"
+	cacheNameAttribute        = "pacecache.name"
+	lookupResultAttribute     = "pacecache.lookup.result"
+	loadResultAttribute       = "pacecache.load.result"
+	removalOperationAttribute = "pacecache.removal.operation"
 )
 
 const (
@@ -45,8 +45,8 @@ const (
 	loadResultNotFound = "not_found"
 	loadResultError    = "error"
 
-	invalidationScopeKeys = "keys"
-	invalidationScopeAll  = "all"
+	removalOperationDelete = "delete"
+	removalOperationClear  = "clear"
 )
 
 type cacheMetricInstruments struct {
@@ -58,7 +58,7 @@ type cacheMetricInstruments struct {
 	loadTime                  metric.Float64ObservableCounter
 	loadSharedCount           metric.Int64ObservableCounter
 	loadSupersededCount       metric.Int64ObservableCounter
-	invalidationCount         metric.Int64ObservableCounter
+	removedCount              metric.Int64ObservableCounter
 	cleanupCount              metric.Int64ObservableCounter
 	cleanupWorkerRunCount     metric.Int64ObservableCounter
 	cleanupWorkerPendingCount metric.Int64ObservableCounter
@@ -77,8 +77,8 @@ type cacheMetricAttributes struct {
 	loadNotFound metric.ObserveOption
 	loadError    metric.ObserveOption
 
-	invalidateKeys metric.ObserveOption
-	invalidateAll  metric.ObserveOption
+	deleteOperation metric.ObserveOption
+	clearOperation  metric.ObserveOption
 }
 
 // RegisterCache registers OpenTelemetry metrics for one cache.
@@ -209,15 +209,15 @@ func (instruments cacheMetricInstruments) observe(
 	)
 
 	observer.ObserveInt64(
-		instruments.invalidationCount,
-		stats.InvalidatedKeyCount,
-		attributes.invalidateKeys,
+		instruments.removedCount,
+		stats.DeletedEntryCount,
+		attributes.deleteOperation,
 	)
 
 	observer.ObserveInt64(
-		instruments.invalidationCount,
-		stats.InvalidatedAllCount,
-		attributes.invalidateAll,
+		instruments.removedCount,
+		stats.ClearedEntryCount,
+		attributes.clearOperation,
 	)
 
 	observer.ObserveInt64(
@@ -267,7 +267,7 @@ func (instruments cacheMetricInstruments) observables() []metric.Observable {
 		instruments.loadTime,
 		instruments.loadSharedCount,
 		instruments.loadSupersededCount,
-		instruments.invalidationCount,
+		instruments.removedCount,
 		instruments.cleanupCount,
 		instruments.cleanupWorkerRunCount,
 		instruments.cleanupWorkerPendingCount,
@@ -379,16 +379,16 @@ func newCacheMetricInstruments(
 			newMetricError(loadSupersededCountMetricName, err)
 	}
 
-	instruments.invalidationCount, err = meter.Int64ObservableCounter(
-		invalidationCountMetricName,
+	instruments.removedCount, err = meter.Int64ObservableCounter(
+		removedCountMetricName,
 		metric.WithDescription(
-			"The cumulative number of resident cache entries removed by explicit invalidation, by scope.",
+			"The cumulative number of resident cache entries removed by Delete, GetAndDelete, and Clear, by operation.",
 		),
 		metric.WithUnit("{entry}"),
 	)
 	if err != nil {
 		return cacheMetricInstruments{},
-			newMetricError(invalidationCountMetricName, err)
+			newMetricError(removedCountMetricName, err)
 	}
 
 	instruments.cleanupCount, err = meter.Int64ObservableCounter(
@@ -519,17 +519,17 @@ func newCacheMetricAttributes(name string) cacheMetricAttributes {
 			),
 		),
 
-		invalidateKeys: option(
+		deleteOperation: option(
 			attribute.String(
-				invalidationScopeAttribute,
-				invalidationScopeKeys,
+				removalOperationAttribute,
+				removalOperationDelete,
 			),
 		),
 
-		invalidateAll: option(
+		clearOperation: option(
 			attribute.String(
-				invalidationScopeAttribute,
-				invalidationScopeAll,
+				removalOperationAttribute,
+				removalOperationClear,
 			),
 		),
 	}

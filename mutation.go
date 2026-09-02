@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type invalidationTarget[K comparable] struct {
+type deletionTarget[K comparable] struct {
 	key   K
 	index int
 }
@@ -182,18 +182,18 @@ func (cache *Cache[K, V]) GetOrSetEntry(
 	}, found
 }
 
-// GetAndInvalidate atomically returns the live value for key and removes it
+// GetAndDelete atomically returns the live value for key and removes it
 // from the cache. Missing and expired entries return the zero value with
 // found=false. Expired entries are reclaimed as expirations.
 //
-// GetAndInvalidate acts as a publication barrier for the same key. An in-flight
+// GetAndDelete acts as a publication barrier for the same key. An in-flight
 // successful loader result is discarded with ErrLoadSuperseded if this method
 // wins before publication, even when no resident entry exists.
 //
 // The operation does not refresh sliding expiration, update LRU recency, or
 // affect lookup hit/miss statistics. A successfully removed live entry is
-// counted as a key invalidation.
-func (cache *Cache[K, V]) GetAndInvalidate(key K) (V, bool) {
+// counted as a deleted entry.
+func (cache *Cache[K, V]) GetAndDelete(key K) (V, bool) {
 	var zero V
 
 	if !cache.initialized() {
@@ -217,23 +217,23 @@ func (cache *Cache[K, V]) GetAndInvalidate(key K) (V, bool) {
 	state.mu.Unlock()
 
 	if found {
-		cache.stats.recordKeyInvalidation(index, 1)
+		cache.stats.recordDelete(index, 1)
 	}
 
 	return value, found
 }
 
-// Invalidate removes the specified keys from the cache.
+// Delete removes the specified keys from the cache.
 //
-// Invalidation acts as a publication barrier. A successful loader result that
-// was already in flight for an invalidated key is discarded with
-// ErrLoadSuperseded if Invalidate wins before publication, and cannot repopulate
-// the key afterward.
+// Delete acts as a publication barrier for each key. A successful loader
+// result already in flight for a deleted key is discarded with
+// ErrLoadSuperseded if Delete wins before publication, and cannot repopulate
+// that key afterward.
 //
 // Missing keys are ignored. Duplicate keys are allowed.
 //
-// Invalidate is a no-op when called without keys or on an uninitialized Cache.
-func (cache *Cache[K, V]) Invalidate(keys ...K) {
+// Delete is a no-op when called without keys or on an uninitialized Cache.
+func (cache *Cache[K, V]) Delete(keys ...K) {
 	if !cache.initialized() || len(keys) == 0 {
 		return
 	}
@@ -241,8 +241,8 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 	if len(keys) == 1 {
 		index := cache.store.segmentIndex(keys[0])
 
-		if cache.invalidateOne(index, keys[0]) {
-			cache.stats.recordKeyInvalidation(index, 1)
+		if cache.deleteOne(index, keys[0]) {
+			cache.stats.recordDelete(index, 1)
 		}
 
 		return
@@ -253,27 +253,27 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 
 		state.mu.Lock()
 
-		var invalidated int64
+		var removed int64
 
 		for _, key := range keys {
 			state.group.Forget(key)
 
 			if cache.store.deleteAt(0, key) {
-				invalidated++
+				removed++
 			}
 		}
 
 		state.mu.Unlock()
 
-		cache.stats.recordKeyInvalidation(0, invalidated)
+		cache.stats.recordDelete(0, removed)
 
 		return
 	}
 
-	targets := make([]invalidationTarget[K], len(keys))
+	targets := make([]deletionTarget[K], len(keys))
 
 	for index, key := range keys {
-		targets[index] = invalidationTarget[K]{
+		targets[index] = deletionTarget[K]{
 			key:   key,
 			index: cache.store.segmentIndex(key),
 		}
@@ -284,28 +284,28 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 	// entries actually removed by this batch.
 	statsIndex := targets[0].index
 
-	// Every invalidation path acquires state locks in ascending segment order.
-	// This keeps multi-key invalidation and InvalidateAll deadlock-free.
+	// Every deletion path acquires state locks in ascending segment order.
+	// This keeps multi-key deletion and Clear deadlock-free.
 	slices.SortFunc(
 		targets,
-		func(left, right invalidationTarget[K]) int {
+		func(left, right deletionTarget[K]) int {
 			return cmp.Compare(left.index, right.index)
 		},
 	)
 
-	previous := -1
+	previousLock := -1
 
 	for _, target := range targets {
-		if target.index == previous {
+		if target.index == previousLock {
 			continue
 		}
 
 		cache.states[target.index].mu.Lock()
 
-		previous = target.index
+		previousLock = target.index
 	}
 
-	var invalidated int64
+	var removed int64
 
 	for _, target := range targets {
 		state := &cache.states[target.index]
@@ -313,39 +313,36 @@ func (cache *Cache[K, V]) Invalidate(keys ...K) {
 		state.group.Forget(target.key)
 
 		if cache.store.deleteAt(target.index, target.key) {
-			invalidated++
+			removed++
 		}
 	}
 
-	previous = -1
+	previousUnlock := -1
 
-	for index := len(targets) - 1; index >= 0; index-- {
-		target := targets[index]
-
-		if target.index == previous {
+	for _, target := range slices.Backward(targets) {
+		if target.index == previousUnlock {
 			continue
 		}
 
 		cache.states[target.index].mu.Unlock()
 
-		previous = target.index
+		previousUnlock = target.index
 	}
 
-	cache.stats.recordKeyInvalidation(statsIndex, invalidated)
+	cache.stats.recordDelete(statsIndex, removed)
 }
 
-// InvalidateAll removes all entries from the cache.
+// Clear removes all entries from the cache.
 //
-// InvalidateAll acts as a cache-wide publication barrier. Successful loader
-// results already in flight are discarded with ErrLoadSuperseded if
-// InvalidateAll wins before publication, and cannot repopulate the cache
-// afterward.
+// Clear acts as a cache-wide publication barrier. Successful loader results
+// already in flight are discarded with ErrLoadSuperseded if Clear wins before
+// publication, and cannot repopulate the cache afterward.
 //
 // The removed entries may include physically resident entries whose TTL has
 // already expired but which have not yet been removed.
 //
-// InvalidateAll is a no-op on an uninitialized Cache.
-func (cache *Cache[K, V]) InvalidateAll() {
+// Clear is a no-op on an uninitialized Cache.
+func (cache *Cache[K, V]) Clear() {
 	if !cache.initialized() {
 		return
 	}
@@ -358,13 +355,13 @@ func (cache *Cache[K, V]) InvalidateAll() {
 		cache.states[index].group.ForgetAll()
 	}
 
-	invalidated := cache.store.deleteAll()
+	removed := cache.store.deleteAll()
 
 	for index := len(cache.states) - 1; index >= 0; index-- {
 		cache.states[index].mu.Unlock()
 	}
 
-	cache.stats.recordAllInvalidation(invalidated)
+	cache.stats.recordClear(removed)
 }
 
 // CleanupExpired physically removes expired entries using the cache expiration
@@ -394,7 +391,7 @@ func (cache *Cache[K, V]) CleanupExpired() int64 {
 	return removed
 }
 
-func (cache *Cache[K, V]) invalidateOne(index int, key K) bool {
+func (cache *Cache[K, V]) deleteOne(index int, key K) bool {
 	state := &cache.states[index]
 
 	state.mu.Lock()

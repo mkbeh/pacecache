@@ -309,38 +309,38 @@ func TestZeroValueCacheGetOrSet(t *testing.T) {
 	}
 }
 
-func TestCacheGetAndInvalidate(t *testing.T) {
+func TestCacheGetAndDelete(t *testing.T) {
 	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
 	cache.Set("key", 42, NoExpiration)
 
 	before := cache.Stats()
 
-	value, found := cache.GetAndInvalidate("key")
+	value, found := cache.GetAndDelete("key")
 	if !found || value != 42 {
-		t.Fatalf("GetAndInvalidate(key) = (%d, %t), want (42, true)", value, found)
+		t.Fatalf("GetAndDelete(key) = (%d, %t), want (42, true)", value, found)
 	}
 	if cache.Exists("key") {
-		t.Fatal("key remains cached after GetAndInvalidate")
+		t.Fatal("key remains cached after GetAndDelete")
 	}
 
 	after := cache.Stats()
-	if after.InvalidatedKeyCount != before.InvalidatedKeyCount+1 {
-		t.Fatalf("InvalidatedKeyCount = %d, want %d", after.InvalidatedKeyCount, before.InvalidatedKeyCount+1)
+	if after.DeletedEntryCount != before.DeletedEntryCount+1 {
+		t.Fatalf("DeletedEntryCount = %d, want %d", after.DeletedEntryCount, before.DeletedEntryCount+1)
 	}
 	if after.HitCount != before.HitCount || after.MissCount != before.MissCount {
-		t.Fatalf("GetAndInvalidate changed lookup stats: hits=%d/%d misses=%d/%d", before.HitCount, after.HitCount, before.MissCount, after.MissCount)
+		t.Fatalf("GetAndDelete changed lookup stats: hits=%d/%d misses=%d/%d", before.HitCount, after.HitCount, before.MissCount, after.MissCount)
 	}
 
-	value, found = cache.GetAndInvalidate("missing")
+	value, found = cache.GetAndDelete("missing")
 	if found || value != 0 {
-		t.Fatalf("GetAndInvalidate(missing) = (%d, %t), want (0, false)", value, found)
+		t.Fatalf("GetAndDelete(missing) = (%d, %t), want (0, false)", value, found)
 	}
-	if got := cache.Stats().InvalidatedKeyCount; got != after.InvalidatedKeyCount {
-		t.Fatalf("missing key changed InvalidatedKeyCount to %d", got)
+	if got := cache.Stats().DeletedEntryCount; got != after.DeletedEntryCount {
+		t.Fatalf("missing key changed DeletedEntryCount to %d", got)
 	}
 }
 
-func TestCacheGetAndInvalidateIsAtomic(t *testing.T) {
+func TestCacheGetAndDeleteIsAtomic(t *testing.T) {
 	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
 	cache.Set("key", 42, NoExpiration)
 
@@ -362,7 +362,7 @@ func TestCacheGetAndInvalidateIsAtomic(t *testing.T) {
 			defer group.Done()
 			<-start
 
-			value, found := cache.GetAndInvalidate("key")
+			value, found := cache.GetAndDelete("key")
 			results <- result{value: value, found: found}
 		}()
 	}
@@ -376,25 +376,25 @@ func TestCacheGetAndInvalidateIsAtomic(t *testing.T) {
 		if current.found {
 			foundCount++
 			if current.value != 42 {
-				t.Fatalf("winning GetAndInvalidate() value = %d, want 42", current.value)
+				t.Fatalf("winning GetAndDelete() value = %d, want 42", current.value)
 			}
 			continue
 		}
 
 		if current.value != 0 {
-			t.Fatalf("losing GetAndInvalidate() value = %d, want zero", current.value)
+			t.Fatalf("losing GetAndDelete() value = %d, want zero", current.value)
 		}
 	}
 
 	if foundCount != 1 {
-		t.Fatalf("successful GetAndInvalidate() calls = %d, want 1", foundCount)
+		t.Fatalf("successful GetAndDelete() calls = %d, want 1", foundCount)
 	}
-	if got := cache.Stats().InvalidatedKeyCount; got != 1 {
-		t.Fatalf("InvalidatedKeyCount = %d, want 1", got)
+	if got := cache.Stats().DeletedEntryCount; got != 1 {
+		t.Fatalf("DeletedEntryCount = %d, want 1", got)
 	}
 }
 
-func TestCacheGetAndInvalidateExpiredEntry(t *testing.T) {
+func TestCacheGetAndDeleteExpiredEntry(t *testing.T) {
 	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
 	index := cache.store.segmentIndex("expired")
 
@@ -409,9 +409,9 @@ func TestCacheGetAndInvalidateExpiredEntry(t *testing.T) {
 
 	before := cache.Stats()
 
-	value, found := cache.GetAndInvalidate("expired")
+	value, found := cache.GetAndDelete("expired")
 	if found || value != 0 {
-		t.Fatalf("GetAndInvalidate(expired) = (%d, %t), want (0, false)", value, found)
+		t.Fatalf("GetAndDelete(expired) = (%d, %t), want (0, false)", value, found)
 	}
 	if cache.Exists("expired") {
 		t.Fatal("expired entry remains resident")
@@ -421,12 +421,12 @@ func TestCacheGetAndInvalidateExpiredEntry(t *testing.T) {
 	if after.ExpirationCount != before.ExpirationCount+1 {
 		t.Fatalf("ExpirationCount = %d, want %d", after.ExpirationCount, before.ExpirationCount+1)
 	}
-	if after.InvalidatedKeyCount != before.InvalidatedKeyCount {
-		t.Fatalf("expired entry changed InvalidatedKeyCount to %d", after.InvalidatedKeyCount)
+	if after.DeletedEntryCount != before.DeletedEntryCount {
+		t.Fatalf("expired entry changed DeletedEntryCount to %d", after.DeletedEntryCount)
 	}
 }
 
-func TestCacheGetAndInvalidateSupersedesInflightLoad(t *testing.T) {
+func TestCacheGetAndDeleteSupersedesInflightLoad(t *testing.T) {
 	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
 
 	started := make(chan struct{})
@@ -449,9 +449,9 @@ func TestCacheGetAndInvalidateSupersedesInflightLoad(t *testing.T) {
 
 	waitTestSignal(t, started)
 
-	value, found := cache.GetAndInvalidate("key")
+	value, found := cache.GetAndDelete("key")
 	if found || value != 0 {
-		t.Fatalf("GetAndInvalidate(key) during load = (%d, %t), want (0, false)", value, found)
+		t.Fatalf("GetAndDelete(key) during load = (%d, %t), want (0, false)", value, found)
 	}
 
 	close(release)
@@ -467,21 +467,21 @@ func TestCacheGetAndInvalidateSupersedesInflightLoad(t *testing.T) {
 	if stats.LoadSupersededCount != 1 {
 		t.Fatalf("LoadSupersededCount = %d, want 1", stats.LoadSupersededCount)
 	}
-	if stats.InvalidatedKeyCount != 0 {
-		t.Fatalf("InvalidatedKeyCount = %d, want 0 for missing resident key", stats.InvalidatedKeyCount)
+	if stats.DeletedEntryCount != 0 {
+		t.Fatalf("DeletedEntryCount = %d, want 0 for missing resident key", stats.DeletedEntryCount)
 	}
 }
 
-func TestZeroValueCacheGetAndInvalidate(t *testing.T) {
+func TestZeroValueCacheGetAndDelete(t *testing.T) {
 	var cache Cache[string, int]
 
-	value, found := cache.GetAndInvalidate("key")
+	value, found := cache.GetAndDelete("key")
 	if found || value != 0 {
-		t.Fatalf("GetAndInvalidate() = (%d, %t), want (0, false)", value, found)
+		t.Fatalf("GetAndDelete() = (%d, %t), want (0, false)", value, found)
 	}
 }
 
-func TestInvalidateMultipleKeysAndDuplicates(t *testing.T) {
+func TestDeleteMultipleKeysAndDuplicates(t *testing.T) {
 	tests := []struct {
 		name    string
 		options []Option
@@ -506,7 +506,7 @@ func TestInvalidateMultipleKeysAndDuplicates(t *testing.T) {
 			cache.Set("b", 2, NoExpiration)
 			cache.Set("c", 3, NoExpiration)
 
-			cache.Invalidate("a", "b", "a", "missing")
+			cache.Delete("a", "b", "a", "missing")
 
 			if _, found := cache.Get("a"); found {
 				t.Fatal("a remains cached")
@@ -517,14 +517,48 @@ func TestInvalidateMultipleKeysAndDuplicates(t *testing.T) {
 			if value, found := cache.Get("c"); value != 3 || !found {
 				t.Fatalf("c = (%d, %t), want retained hit", value, found)
 			}
-			if got := cache.Stats().InvalidatedKeyCount; got != 2 {
-				t.Fatalf("InvalidatedKeyCount = %d, want 2", got)
+			if got := cache.Stats().DeletedEntryCount; got != 2 {
+				t.Fatalf("DeletedEntryCount = %d, want 2", got)
 			}
 		})
 	}
 }
 
-func TestConcurrentMultiKeyInvalidationLockOrderDoesNotDeadlock(t *testing.T) {
+func TestCacheClear(t *testing.T) {
+	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(2))
+	cache.Set("a", 1, NoExpiration)
+	cache.Set("b", 2, NoExpiration)
+
+	before := cache.Stats()
+
+	cache.Clear()
+
+	if cache.Exists("a") || cache.Exists("b") {
+		t.Fatal("entries remain cached after Clear")
+	}
+
+	after := cache.Stats()
+	if after.EntryCount != 0 {
+		t.Fatalf("EntryCount = %d, want 0", after.EntryCount)
+	}
+	if after.ClearedEntryCount != before.ClearedEntryCount+2 {
+		t.Fatalf(
+			"ClearedEntryCount = %d, want %d",
+			after.ClearedEntryCount,
+			before.ClearedEntryCount+2,
+		)
+	}
+	if after.DeletedEntryCount != before.DeletedEntryCount {
+		t.Fatalf("Clear changed DeletedEntryCount to %d", after.DeletedEntryCount)
+	}
+
+	cache.Clear()
+	if got := cache.Stats().ClearedEntryCount; got != after.ClearedEntryCount {
+		t.Fatalf("empty Clear changed ClearedEntryCount to %d", got)
+	}
+}
+
+func TestConcurrentMultiKeyDeletionLockOrderDoesNotDeadlock(t *testing.T) {
 	cache := mustNewCache[int](t, "users", WithMaxEntries(16), WithSegmentCount(8))
 	cache.Set("a", 1, NoExpiration)
 	cache.Set("b", 2, NoExpiration)
@@ -535,7 +569,7 @@ func TestConcurrentMultiKeyInvalidationLockOrderDoesNotDeadlock(t *testing.T) {
 		go func() {
 			defer group.Done()
 			for range 1_000 {
-				cache.Invalidate(keys...)
+				cache.Delete(keys...)
 			}
 		}()
 	}

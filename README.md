@@ -72,7 +72,7 @@ defer cache.Close()
 ```
 <!-- @formatter:on -->
 
-Values can be stored, retrieved, checked, conditionally inserted, and invalidated:
+Values can be stored, retrieved, checked, conditionally inserted, and deleted:
 
 <!-- @formatter:off -->
 ```go
@@ -94,11 +94,11 @@ exists := cache.Exists("key2")
 value, found = cache.GetOrSet("key4", "value4", pacecache.DefaultExpiration)
 entry, found = cache.GetOrSetEntry("key5", "value5", 30*time.Second)
 
-// Invalidate cached values.
-value, found = cache.GetAndInvalidate("key3") // read and invalidate atomically
-cache.Invalidate("key1")                      // invalidate one key
-cache.Invalidate("key2", "key4")              // invalidate multiple keys
-cache.InvalidateAll()                         // clear the cache
+// Delete cached values.
+value, found = cache.GetAndDelete("key3") // read and delete atomically
+cache.Delete("key1")                      // delete one key
+cache.Delete("key2", "key4")              // delete multiple keys
+cache.Clear()                             // clear the cache
 ```
 <!-- @formatter:on -->
 
@@ -189,17 +189,20 @@ The cache provides built-in runtime statistics and optional OpenTelemetry metric
 stats := cache.Stats()
 
 // Selected statistics available in the snapshot.
-_ = stats.EntryCount      // Current live entries
-_ = stats.MaxEntries      // Configured maximum capacity
-_ = stats.HitCount        // Cache hits
-_ = stats.MissCount       // Cache misses
-_ = stats.EvictionCount   // LRU evictions
-_ = stats.ExpirationCount // Expired entries removed
-_ = stats.LoadErrorCount  // Loader errors
+_ = stats.EntryCount        // Current live entries
+_ = stats.MaxEntries        // Configured maximum capacity
+_ = stats.HitCount          // Cache hits
+_ = stats.MissCount         // Cache misses
+_ = stats.EvictionCount     // LRU evictions
+_ = stats.ExpirationCount   // Expired entries removed
+_ = stats.LoadErrorCount    // Loader errors
+_ = stats.DeletedEntryCount // Entries removed by Delete or GetAndDelete
+_ = stats.ClearedEntryCount // Entries removed by Clear
 ```
 <!-- @formatter:on -->
 
-Statistics also include load outcomes, shared and superseded loads, invalidations, cleanup activity, and segment count.
+Statistics also include load outcomes, shared and superseded loads, deleted and cleared entry counts, cleanup activity,
+and segment count.
 
 Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel). OpenTelemetry configuration and
 exporter selection remain application concerns, so Prometheus, OTLP, and other exporters can be used without changing

@@ -99,8 +99,8 @@ func TestRegisterCacheCollectsMetrics(t *testing.T) {
 		LoadDuration:        1500 * time.Millisecond,
 		SharedCount:         4,
 
-		InvalidatedKeyCount: 8,
-		InvalidatedAllCount: 9,
+		DeletedEntryCount: 8,
+		ClearedEntryCount: 9,
 
 		CleanupCount:              10,
 		CleanupWorkerRunCount:     11,
@@ -247,20 +247,20 @@ func TestRegisterCacheCollectsMetrics(t *testing.T) {
 	requireInt64MetricPoint(
 		t,
 		collected,
-		invalidationCountMetricName,
+		removedCountMetricName,
 		map[string]string{
-			cacheNameAttribute:         "users",
-			invalidationScopeAttribute: invalidationScopeKeys,
+			cacheNameAttribute:        "users",
+			removalOperationAttribute: removalOperationDelete,
 		},
 		8,
 	)
 	requireInt64MetricPoint(
 		t,
 		collected,
-		invalidationCountMetricName,
+		removedCountMetricName,
 		map[string]string{
-			cacheNameAttribute:         "users",
-			invalidationScopeAttribute: invalidationScopeAll,
+			cacheNameAttribute:        "users",
+			removalOperationAttribute: removalOperationClear,
 		},
 		9,
 	)
@@ -359,7 +359,7 @@ func collectMetricsByName(
 		loadTimeMetricName,
 		loadSharedCountMetricName,
 		loadSupersededCountMetricName,
-		invalidationCountMetricName,
+		removedCountMetricName,
 		cleanupCountMetricName,
 		cleanupWorkerRunCountMetricName,
 		cleanupWorkerPendingCountMetricName,
