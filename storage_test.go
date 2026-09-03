@@ -109,7 +109,7 @@ func TestStorageEnableExpirationAndSliding(t *testing.T) {
 	}
 }
 
-func TestStorageCleanupExpiredYieldsBetweenBatches(t *testing.T) {
+func TestStorageDeleteExpiredYieldsBetweenBatches(t *testing.T) {
 	const entries = defaultCleanupBatchSize + 10
 	store := newStorageWithExpirationResolution[string, int](entries, 1, time.Nanosecond)
 	stats := newStatsCollector(1)
@@ -129,7 +129,7 @@ func TestStorageCleanupExpiredYieldsBetweenBatches(t *testing.T) {
 	}
 }
 
-func TestStorageCleanupExpiredDrainsAllDueEntries(t *testing.T) {
+func TestStorageDeleteExpiredDrainsAllDueEntries(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](32, 2, time.Nanosecond)
 	stats := newStatsCollector(2)
 

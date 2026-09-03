@@ -44,7 +44,7 @@ func (cache *Cache[K, V]) RefreshTTL(key K) bool {
 //
 // The returned bool reports whether a live entry exists. A live hit updates LRU
 // recency and contributes to lookup statistics. Expired entries are always
-// treated as misses and are removed when observed, by CleanupExpired, or by
+// treated as misses and are removed when observed, by DeleteExpired, or by
 // background cleanup when it is enabled. When sliding expiration is enabled,
 // a live hit refreshes the entry using the TTL with which it was stored.
 func (cache *Cache[K, V]) Get(key K) (V, bool) {

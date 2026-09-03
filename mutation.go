@@ -364,10 +364,10 @@ func (cache *Cache[K, V]) Clear() {
 	cache.stats.recordClear(removed)
 }
 
-// CleanupExpired physically removes expired entries using the cache expiration
+// DeleteExpired physically removes expired entries using the cache expiration
 // index and returns the number of entries removed.
 //
-// CleanupExpired is always available; background cleanup does not need to be
+// DeleteExpired is always available; background cleanup does not need to be
 // enabled. Logical expiration is independent of physical cleanup: an expired
 // entry is never returned even if it has not yet been reclaimed. Nearby
 // expiration deadlines are grouped internally. Bucket eligibility may trail
@@ -375,7 +375,7 @@ func (cache *Cache[K, V]) Clear() {
 // physical reclamation also depends on when cleanup runs. Manual cleanup uses
 // the configured cleanup batch size and entry budget, yielding cooperatively
 // between quanta until all entries due at the start of the call are drained.
-func (cache *Cache[K, V]) CleanupExpired() int64 {
+func (cache *Cache[K, V]) DeleteExpired() int64 {
 	if !cache.initialized() {
 		return 0
 	}

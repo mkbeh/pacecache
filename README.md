@@ -155,7 +155,7 @@ cache, _ := pacecache.New[string, string](
 defer cache.Close()
 
 // Or reclaim expired entries explicitly.
-cache.CleanupExpired()
+cache.DeleteExpired()
 ```
 <!-- @formatter:on -->
 

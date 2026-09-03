@@ -612,7 +612,7 @@ func TestCacheStoresTTLPolicyForDefaultCustomAndNoExpiration(t *testing.T) {
 	}
 }
 
-func TestCacheCleanupExpired(t *testing.T) {
+func TestCacheDeleteExpired(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](4, 1, time.Nanosecond)
 	cache := &Cache[string, int]{
 		name:   "test",
@@ -629,8 +629,8 @@ func TestCacheCleanupExpired(t *testing.T) {
 	store.setAt(0, "expired", 1, time.Nanosecond, -1, cache.stats.segment(0))
 	store.setAt(0, "live", 2, time.Hour, int64(time.Hour), cache.stats.segment(0))
 
-	if removed := cache.CleanupExpired(); removed != 1 {
-		t.Fatalf("CleanupExpired() = %d, want 1", removed)
+	if removed := cache.DeleteExpired(); removed != 1 {
+		t.Fatalf("DeleteExpired() = %d, want 1", removed)
 	}
 	if _, ok := store.segments[0].entries["expired"]; ok {
 		t.Fatal("expired entry remains resident")

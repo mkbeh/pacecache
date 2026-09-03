@@ -48,8 +48,8 @@ func TestZeroValueCacheIsSafe(t *testing.T) {
 	if entry, found := cache.GetEntry("key"); entry != (Entry[int]{}) || found {
 		t.Fatalf("zero Cache.GetEntry() = (%+v, %t), want zero/false", entry, found)
 	}
-	if removed := cache.CleanupExpired(); removed != 0 {
-		t.Fatalf("zero Cache.CleanupExpired() = %d, want 0", removed)
+	if removed := cache.DeleteExpired(); removed != 0 {
+		t.Fatalf("zero Cache.DeleteExpired() = %d, want 0", removed)
 	}
 
 	cache.Set("key", 1, DefaultExpiration)

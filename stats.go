@@ -83,7 +83,7 @@ type Stats struct {
 	// Cleanup lifecycle.
 
 	// CleanupCount is the cumulative number of completed explicit
-	// CleanupExpired calls.
+	// DeleteExpired calls.
 	CleanupCount int64
 
 	// CleanupWorkerRunCount is the cumulative number of cleanup quanta
