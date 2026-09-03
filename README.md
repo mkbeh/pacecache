@@ -156,7 +156,7 @@ Missing results and loader errors are returned without being cached. Concurrent 
 loader execution, avoiding duplicate requests to the upstream source.
 
 Expired entries are never returned and are removed lazily when encountered. Periodic background cleanup can be enabled
-for entries that may remain untouched, or expired entries can be reclaimed explicitly when needed.
+for entries that may remain untouched:
 
 <!-- @formatter:off -->
 ```go
@@ -166,14 +166,11 @@ cache, _ := pacecache.New[string, string](
     pacecache.WithCleanupInterval(time.Minute), // background cleanup
 )
 defer cache.Close()
-
-// Or reclaim expired entries explicitly.
-cache.DeleteExpired()
 ```
 <!-- @formatter:on -->
 
-Background cleanup is optional. `Close` stops the cleanup worker and waits for it to exit.
-
+Background cleanup is optional. Expired entries can also be reclaimed explicitly with `DeleteExpired`. `Close` stops
+the cleanup worker and waits for it to exit.
 ## Concurrency semantics
 
 The cache coordinates concurrent loads and mutations to prevent duplicate upstream work and stale values from
