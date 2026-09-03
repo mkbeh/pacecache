@@ -72,7 +72,7 @@ defer cache.Close()
 ```
 <!-- @formatter:on -->
 
-Values can be stored, retrieved, checked, conditionally inserted, and deleted:
+Values can be stored, retrieved, checked, conditionally inserted, and removed:
 
 <!-- @formatter:off -->
 ```go
@@ -94,50 +94,63 @@ exists := cache.Exists("key2")
 value, found = cache.GetOrSet("key4", "value4", pacecache.DefaultExpiration)
 entry, found = cache.GetOrSetEntry("key5", "value5", 30*time.Second)
 
-// Delete cached values.
+// Remove cached values.
 value, found = cache.GetAndDelete("key3") // read and delete atomically
 cache.Delete("key1")                      // delete one key
 cache.Delete("key2", "key4")              // delete multiple keys
-cache.Clear()                             // clear the cache
+cache.DeleteExpired()                     // remove expired entries
+cache.Clear()                             // remove all entries
 ```
 <!-- @formatter:on -->
 
-`GetOrLoad` can lazily load values on cache misses using a default loader configured for the cache. Successful results
-are stored using the cache's default expiration:
+Use `GetOrLoadWith` to load a value on a cache miss with a per-call loader. The loader runs only when no live entry
+exists; successful results are cached using the cache's default expiration:
 
 <!-- @formatter:off -->
 ```go
-loader := pacecache.Loader[string, string](
-    func(ctx context.Context, key string) (string, bool, error) {
-        // Load from a database, file, or remote service.
-        return "loaded " + key, true, nil
-    },
-)
+// Define a loader that fetches the value from an upstream source.
+loader := pacecache.Loader[string, string](func(ctx context.Context, key string) (string, bool, error) {
+    // Fetch data from a database, file, or remote service.
+    return "loaded " + key, true, nil
+})
 
-cache, err := pacecache.NewWithLoader[string, string](
-    "cache",
-    loader,
-    pacecache.WithTTL(5*time.Minute),
-)
+// Return the cached value or invoke the loader on a miss.
+value, found, err := cache.GetOrLoadWith(ctx, "key", loader)
 if err != nil {
     panic(err)
 }
+
+if found {
+    fmt.Println("retrieved value:", value) // loaded key
+}
+```
+<!-- @formatter:on -->
+
+If the same loader is reused across calls, configure it once with `NewWithDefaultLoader` and use `GetOrLoad`:
+
+<!-- @formatter:off -->
+```go
+cache, _ := pacecache.NewWithDefaultLoader[string, string](
+    "cache",
+    func(ctx context.Context, key string) (string, bool, error) {
+        // Fetch data from a database, file, or remote service.
+        return "loaded " + key, true, nil
+    },
+    pacecache.WithTTL(5*time.Minute),
+)
 defer cache.Close()
 
-// Return the cached value or invoke the default loader on a miss.
+// Return the cached value or invoke the configured loader on a miss.
 value, found, err := cache.GetOrLoad(ctx, "key")
 if err != nil {
     panic(err)
 }
 
 if found {
-    fmt.Println("retrieved value:", value)
+    fmt.Println("retrieved value:", value) // loaded key
 }
 ```
 <!-- @formatter:on -->
-
-Use `GetOrLoadWith` or `GetOrLoadEntryWith` when a specific operation should use a different loader. Caches created
-with `New` can still use these per-call loaders without configuring a default loader.
 
 Missing results and loader errors are returned without being cached. Concurrent misses for the same key share a single
 loader execution, avoiding duplicate requests to the upstream source.
@@ -201,15 +214,15 @@ The cache provides built-in runtime statistics and optional OpenTelemetry metric
 stats := cache.Stats()
 
 // Selected statistics available in the snapshot.
-_ = stats.EntryCount        // Current live entries
+_ = stats.EntryCount        // Current resident entries
 _ = stats.MaxEntries        // Configured maximum capacity
 _ = stats.HitCount          // Cache hits
 _ = stats.MissCount         // Cache misses
 _ = stats.EvictionCount     // LRU evictions
 _ = stats.ExpirationCount   // Expired entries removed
 _ = stats.LoadErrorCount    // Loader errors
-_ = stats.DeletedEntryCount // Entries removed by Delete or GetAndDelete
-_ = stats.ClearedEntryCount // Entries removed by Clear
+_ = stats.DeletedEntryCount // Explicitly deleted entries
+_ = stats.ClearedEntryCount // Entries removed by full cache clears
 ```
 <!-- @formatter:on -->
 
