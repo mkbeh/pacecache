@@ -18,8 +18,8 @@ const (
 // Cache is a bounded in-process cache for keys of type K and values of type V.
 //
 // Cache uses exact LRU eviction within each storage segment and TTL expiration.
-// Entries may optionally use sliding expiration. GetOrLoad, GetOrLoadWith,
-// GetOrLoadEntry, and GetOrLoadEntryWith provide cache-aside loading and
+// Entries may optionally use sliding expiration. GetOrLoad, GetOrLoadFunc,
+// GetOrLoadEntry, and GetOrLoadEntryFunc provide cache-aside loading and
 // coalesce concurrent loads for the same key.
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
@@ -61,8 +61,8 @@ func New[K comparable, V any](
 // NewWithDefaultLoader creates a Cache with the given logical name and default loader.
 //
 // The loader is used by GetOrLoad and GetOrLoadEntry when no live cache entry
-// exists. Per-call loaders may be supplied through GetOrLoadWith and
-// GetOrLoadEntryWith. Loader must not be nil.
+// exists. Per-call loaders may be supplied through GetOrLoadFunc and
+// GetOrLoadEntryFunc. Loader must not be nil.
 //
 // Name, options, metrics, and background cleanup have the same semantics as New.
 func NewWithDefaultLoader[K comparable, V any](

@@ -25,7 +25,7 @@ type cacheState[K comparable, V any] struct {
 //
 // On a cache miss, GetOrLoad returns ErrNoLoader when the cache was created
 // without a default loader. Use NewWithDefaultLoader to configure one, or
-// GetOrLoadWith to supply a loader for a specific operation.
+// GetOrLoadFunc to supply a loader for a specific operation.
 //
 // A loader result with found=true is cached using the configured TTL. A result
 // with found=false and a nil error is returned to callers but is not cached.
@@ -42,8 +42,8 @@ type cacheState[K comparable, V any] struct {
 // precedence over ErrLoadSuperseded. Mutations of other keys do not affect the
 // load, even when those keys share the same segment.
 //
-// A loader must not call GetOrLoad, GetOrLoadWith, GetOrLoadEntry, or
-// GetOrLoadEntryWith recursively for the same key, because the nested call
+// A loader must not call GetOrLoad, GetOrLoadFunc, GetOrLoadEntry, or
+// GetOrLoadEntryFunc recursively for the same key, because the nested call
 // would wait for the load already in progress.
 //
 // When err is non-nil, the returned value is the zero value of V and found is
@@ -60,17 +60,17 @@ func (cache *Cache[K, V]) GetOrLoad(
 	return cache.getOrLoadValue(ctx, key, cache.loader)
 }
 
-// GetOrLoadWith returns the cached value for key or obtains it from loader.
+// GetOrLoadFunc returns the cached value for key or obtains it from loader.
 //
 // The supplied loader is used instead of the cache's configured default loader
 // when this caller starts the shared load. If another caller already owns a
-// same-key load, GetOrLoadWith joins that wave and the supplied loader is not
+// same-key load, GetOrLoadFunc joins that wave and the supplied loader is not
 // invoked. Loader is only required when no live cache entry exists; a nil
 // loader therefore returns ErrNoLoader on a miss.
 //
-// GetOrLoadWith otherwise has the same cache, singleflight, publication, and
+// GetOrLoadFunc otherwise has the same cache, singleflight, publication, and
 // statistics semantics as GetOrLoad.
-func (cache *Cache[K, V]) GetOrLoadWith(
+func (cache *Cache[K, V]) GetOrLoadFunc(
 	ctx context.Context,
 	key K,
 	loader Loader[K, V],
@@ -84,7 +84,7 @@ func (cache *Cache[K, V]) GetOrLoadWith(
 //
 // On a cache miss, GetOrLoadEntry returns ErrNoLoader when the cache was
 // created without a default loader. Use NewWithDefaultLoader to configure one, or
-// GetOrLoadEntryWith to supply a loader for a specific operation.
+// GetOrLoadEntryFunc to supply a loader for a specific operation.
 //
 // A loader result with found=false is not cached and returns the zero Entry with
 // found=false. GetOrLoadEntry otherwise has the same lookup, singleflight,
@@ -106,17 +106,17 @@ func (cache *Cache[K, V]) GetOrLoadEntry(
 	return cache.getOrLoadEntry(ctx, key, cache.loader)
 }
 
-// GetOrLoadEntryWith returns a read-only cache entry snapshot for key or
+// GetOrLoadEntryFunc returns a read-only cache entry snapshot for key or
 // obtains the value from loader and publishes it before returning the snapshot.
 //
 // The supplied loader is used instead of the cache's configured default loader
 // when this caller starts the shared load. If another caller already owns a
-// same-key load, GetOrLoadEntryWith joins that wave and the supplied loader is
+// same-key load, GetOrLoadEntryFunc joins that wave and the supplied loader is
 // not invoked. Loader is only required when no live cache entry exists; a nil
 // loader therefore returns ErrNoLoader on a miss.
 //
-// GetOrLoadEntryWith otherwise has the same semantics as GetOrLoadEntry.
-func (cache *Cache[K, V]) GetOrLoadEntryWith(
+// GetOrLoadEntryFunc otherwise has the same semantics as GetOrLoadEntry.
+func (cache *Cache[K, V]) GetOrLoadEntryFunc(
 	ctx context.Context,
 	key K,
 	loader Loader[K, V],

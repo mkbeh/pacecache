@@ -6,7 +6,7 @@ import (
 )
 
 // Entry is a read-only snapshot returned by GetEntry, GetOrLoadEntry,
-// GetOrLoadEntryWith, or GetOrSetEntry.
+// GetOrLoadEntryFunc, or GetOrSetEntry.
 //
 // Entry captures the value and expiration metadata observed by the operation.
 // The value is returned using normal Go value semantics and is not deep-copied.

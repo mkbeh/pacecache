@@ -295,7 +295,7 @@ func TestCacheGetOrSetSupersedesInflightLoad(t *testing.T) {
 	result := make(chan error, 1)
 
 	go func() {
-		_, _, err := cache.GetOrLoadWith(
+		_, _, err := cache.GetOrLoadFunc(
 			context.Background(),
 			"key",
 			func(ctx context.Context, _ string) (int, bool, error) {
@@ -494,7 +494,7 @@ func TestCacheGetOrSetEntrySupersedesInflightLoad(t *testing.T) {
 	result := make(chan error, 1)
 
 	go func() {
-		_, _, err := cache.GetOrLoadWith(
+		_, _, err := cache.GetOrLoadFunc(
 			context.Background(),
 			"key",
 			func(ctx context.Context, _ string) (int, bool, error) {
