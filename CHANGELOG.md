@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## v1.2.0
+
+This release streamlines cache removal and makes cache-aside loading configurable through default and per-call loaders.
+
+### Added
+
+* **Default Loader:** Added `NewWithLoader` to configure a key-aware loader once and reuse it across load operations.
+* **Per-Call Loaders:** Added `GetOrLoadWith` and `GetOrLoadEntryWith` for overriding the configured loader for a
+  specific operation.
+* **Load Errors:** Added `ErrNoLoader` and `ErrNotInitialized` for explicit loader and cache initialization errors.
+
+### Changed
+
+* **Removal API:** Renamed `GetAndInvalidate`, `Invalidate`, and `InvalidateAll` to `GetAndDelete`, `Delete`, and
+  `Clear`.
+* **Removal Statistics:** Replaced invalidation counters with `DeletedEntryCount` and `ClearedEntryCount` to reflect
+  entries removed by `Delete` and `Clear`.
+* **Loader API:** Made `Loader` key-aware; `GetOrLoad` and `GetOrLoadEntry` now use the loader configured for the cache.
+
+## extra/paceotel/v1.2.0
+
+This release aligns `paceotel` with the removal API introduced in `pacecache` v1.2.0.
+
+### Changed
+
+* **Removed Entries:** Renamed `pacecache.entry.invalidation.count` to `pacecache.entry.removed.count`.
+* **Removal Operations:** Replaced `pacecache.invalidation.scope` with `pacecache.removal.operation`, using `delete`
+  and `clear` as operation values.
+* **Core Dependency:** Updated `github.com/mkbeh/pacecache` to v1.2.0.
+
 ## v1.1.0
 
 This release establishes Go 1.27 as the new compatibility baseline for `pacecache`.
