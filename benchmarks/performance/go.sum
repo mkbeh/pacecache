@@ -31,8 +31,8 @@ github.com/magiconair/properties v1.18.11/go.mod h1:Dhd985XPs7jluiymwWYZ0G4Z61jb
 github.com/mattn/go-runewidth v0.0.9/go.mod h1:H031xJmbD/WCDINGzjvQ9THkh0rPKHF+m2gUSrubnMI=
 github.com/mattn/go-runewidth v0.0.28 h1:rPyg2ybwEKPebvpzVWe1gKBkH8EQFkxO4Y0hjBeLaBU=
 github.com/mattn/go-runewidth v0.0.28/go.mod h1:3qAiGCV4Koz/yuveO58qUefmUTRm8r0IGEXZ9jeHp/8=
-github.com/mkbeh/pacecache v1.2.0 h1:dhBUrECLnvMe1Jg97t8HiZRJKUhLWhna68Yr6yyI7rg=
-github.com/mkbeh/pacecache v1.2.0/go.mod h1:as4jKAE+vfi+/MSvFvOJovg9a1+OjlV0rUkIi7vMFiQ=
+github.com/mkbeh/pacecache v1.2.1 h1:88xfM6mM7dUM8nzYnPZhbBX/9mf6E1csic/DP1lWWXo=
+github.com/mkbeh/pacecache v1.2.1/go.mod h1:as4jKAE+vfi+/MSvFvOJovg9a1+OjlV0rUkIi7vMFiQ=
 github.com/olekukonko/tablewriter v0.0.5 h1:P2Ga83D34wi1o9J6Wh1mRuqd4mF/x/lgBS7N7AbDhec=
 github.com/olekukonko/tablewriter v0.0.5/go.mod h1:hPp6KlRPjbx+hW8ykQs1w3UBbZlj6HuIJcUGPhkA7kY=
 github.com/pingcap/errors v0.11.5-0.20211224045212-9687c2b0f87c h1:xpW9bvK+HuuTmyFqUwr+jcCvpVkK7sumiz+ko5H9eq4=
