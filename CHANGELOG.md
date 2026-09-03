@@ -24,16 +24,16 @@ This release streamlines cache removal and makes cache-aside loading configurabl
   post-clear occupancy instead of historical cache size.
 * **Loader API:** Made `Loader` key-aware; `GetOrLoad` and `GetOrLoadEntry` now use the loader configured for the cache.
 
-## extra/paceotel/v1.2.0
+## extra/paceotel/v1.2.1
 
-This release aligns `paceotel` with the removal API introduced in `pacecache` v1.2.0.
+This release aligns `paceotel` with the removal API introduced in `pacecache` v1.2.1.
 
 ### Changed
 
 * **Removed Entries:** Renamed `pacecache.entry.invalidation.count` to `pacecache.entry.removed.count`.
 * **Removal Operations:** Replaced `pacecache.invalidation.scope` with `pacecache.removal.operation`, using `delete`
   and `clear` as operation values.
-* **Core Dependency:** Updated `github.com/mkbeh/pacecache` to v1.2.0.
+* **Core Dependency:** Updated `github.com/mkbeh/pacecache` to v1.2.1.
 
 ## v1.1.0
 
