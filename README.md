@@ -111,7 +111,7 @@ exists; successful results are cached using the cache's default expiration:
 // Define a loader that fetches the value from an upstream source.
 loader := pacecache.Loader[string, string](func(ctx context.Context, key string) (string, bool, error) {
     // Fetch data from a database, file, or remote service.
-    return "loaded " + key, true, nil
+    return "loaded value", true, nil
 })
 
 // Return the cached value or invoke the loader on a miss.
@@ -134,7 +134,7 @@ cache, _ := pacecache.NewWithDefaultLoader[string, string](
     "cache",
     func(ctx context.Context, key string) (string, bool, error) {
         // Fetch data from a database, file, or remote service.
-        return "loaded " + key, true, nil
+        return "loaded value", true, nil
     },
     pacecache.WithTTL(5*time.Minute),
 )
