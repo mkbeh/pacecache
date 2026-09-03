@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## v1.2.0
+## v1.2.1
 
 This release streamlines cache removal and makes cache-aside loading configurable through default and per-call loaders.
 
@@ -10,7 +10,7 @@ This release streamlines cache removal and makes cache-aside loading configurabl
 
 * **Default Loader:** Added `NewWithDefaultLoader` to configure a key-aware loader once and reuse it across load
   operations.
-* **Per-Call Loaders:** Added `GetOrLoadWith` and `GetOrLoadEntryWith` to use a loader supplied for a specific operation
+* **Per-Call Loaders:** Added `GetOrLoadFunc` and `GetOrLoadEntryFunc` to use a loader supplied for a specific operation
   instead of the configured default loader.
 * **Load Errors:** Added `ErrNoLoader` and `ErrNotInitialized` for explicit loader and cache initialization errors.
 

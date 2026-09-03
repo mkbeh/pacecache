@@ -103,7 +103,7 @@ cache.Clear()                             // remove all entries
 ```
 <!-- @formatter:on -->
 
-Use `GetOrLoadWith` to load a value on a cache miss with a per-call loader. The loader runs only when no live entry
+Use `GetOrLoadFunc` to load a value on a cache miss with a per-call loader. The loader runs only when no live entry
 exists; successful results are cached using the cache's default expiration:
 
 <!-- @formatter:off -->
@@ -115,7 +115,7 @@ loader := pacecache.Loader[string, string](func(ctx context.Context, key string)
 })
 
 // Return the cached value or invoke the loader on a miss.
-value, found, err := cache.GetOrLoadWith(ctx, "key", loader)
+value, found, err := cache.GetOrLoadFunc(ctx, "key", loader)
 if err != nil {
     panic(err)
 }
