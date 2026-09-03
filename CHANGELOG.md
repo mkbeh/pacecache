@@ -8,17 +8,20 @@ This release streamlines cache removal and makes cache-aside loading configurabl
 
 ### Added
 
-* **Default Loader:** Added `NewWithDefaultLoader` to configure a key-aware loader once and reuse it across load operations.
-* **Per-Call Loaders:** Added `GetOrLoadWith` and `GetOrLoadEntryWith` for overriding the configured loader for a
-  specific operation.
+* **Default Loader:** Added `NewWithDefaultLoader` to configure a key-aware loader once and reuse it across load
+  operations.
+* **Per-Call Loaders:** Added `GetOrLoadWith` and `GetOrLoadEntryWith` to use a loader supplied for a specific operation
+  instead of the configured default loader.
 * **Load Errors:** Added `ErrNoLoader` and `ErrNotInitialized` for explicit loader and cache initialization errors.
 
 ### Changed
 
 * **Removal API:** Renamed `GetAndInvalidate`, `Invalidate`, and `InvalidateAll` to `GetAndDelete`, `Delete`, and
   `Clear`.
-* **Removal Statistics:** Replaced invalidation counters with `DeletedEntryCount` and `ClearedEntryCount` to reflect
-  entries removed by `Delete` and `Clear`.
+* **Removal Statistics:** Replaced invalidation counters with `DeletedEntryCount` and `ClearedEntryCount` to distinguish
+  explicitly deleted entries from entries removed by full cache clears.
+* **Clear Memory Reclamation:** `Clear` now discards retained entry-map storage so memory usage can scale with
+  post-clear occupancy instead of historical cache size.
 * **Loader API:** Made `Loader` key-aware; `GetOrLoad` and `GetOrLoadEntry` now use the loader configured for the cache.
 
 ## extra/paceotel/v1.2.0
