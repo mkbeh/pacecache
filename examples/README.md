@@ -2,10 +2,10 @@
 
 This directory contains runnable examples demonstrating the main `pacecache` usage patterns.
 
-| Example            | Demonstrates                                                                                                       |
-|--------------------|--------------------------------------------------------------------------------------------------------------------|
-| [`basic`](./basic) | Cache-aside loading, direct lookups, entry metadata, not-found loader behavior, invalidation, and cache statistics |
-| [`otel`](./otel)   | Exporting `pacecache` metrics with the optional `extra/paceotel` OpenTelemetry integration                         |
+| Example            | Demonstrates                                                                                                   |
+|--------------------|----------------------------------------------------------------------------------------------------------------|
+| [`basic`](./basic) | Cache-aside loading, direct lookups, entry metadata, not-found loader behavior, deletion, and cache statistics |
+| [`otel`](./otel)   | Exporting `pacecache` metrics with the optional `extra/paceotel` OpenTelemetry integration                     |
 
 ## Running the examples
 

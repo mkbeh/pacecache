@@ -15,7 +15,7 @@ type Stats struct {
 
 	// EntryCount is the number of entries currently resident in storage.
 	// Expired entries may remain resident until they are observed, evicted,
-	// invalidated, or removed by manual or background cleanup.
+	// deleted, cleared, or reclaimed by manual or background cleanup.
 	EntryCount int64
 
 	// MaxEntries is the configured total entry budget after applying defaults.
@@ -50,8 +50,8 @@ type Stats struct {
 
 	// LoadSupersededCount is the cumulative number of successful actual loader
 	// invocations whose result was discarded because a newer cache mutation,
-	// such as Set, GetOrSet and GetOrSetEntry insertions, Invalidate, or
-	// InvalidateAll, won before publication.
+	// such as Set, GetOrSet and GetOrSetEntry insertions, Delete, or
+	// Clear, won before publication.
 	//
 	// Superseded loads are still included in LoadFoundCount or LoadNotFoundCount,
 	// according to the loader result, and are not included in LoadErrorCount.
@@ -65,25 +65,25 @@ type Stats struct {
 	// singleflight result shared with at least one other caller.
 	SharedCount int64
 
-	// Invalidation lifecycle.
+	// Explicit removal lifecycle.
 
-	// InvalidatedKeyCount is the cumulative number of resident entries removed by
-	// key-scoped invalidation operations such as Invalidate and GetAndInvalidate.
+	// DeletedEntryCount is the cumulative number of resident entries removed by
+	// key-scoped deletion operations such as Delete and GetAndDelete.
 	// Missing keys and duplicate keys that were already removed do not increase
 	// the count.
-	InvalidatedKeyCount int64
+	DeletedEntryCount int64
 
-	// InvalidatedAllCount is the cumulative number of resident entries removed by
-	// InvalidateAll.
+	// ClearedEntryCount is the cumulative number of resident entries removed by
+	// Clear.
 	//
 	// This may include physically resident entries whose TTL had already expired
 	// but which had not yet been removed.
-	InvalidatedAllCount int64
+	ClearedEntryCount int64
 
 	// Cleanup lifecycle.
 
 	// CleanupCount is the cumulative number of completed explicit
-	// CleanupExpired calls.
+	// DeleteExpired calls.
 	CleanupCount int64
 
 	// CleanupWorkerRunCount is the cumulative number of cleanup quanta
@@ -115,7 +115,7 @@ type Stats struct {
 type statsCollector struct {
 	segments []segmentStats
 
-	invalidatedAllCount atomic.Int64
+	clearedEntryCount atomic.Int64
 
 	cleanupCount               atomic.Int64
 	cleanupWorkerRunCount      atomic.Int64
@@ -140,7 +140,7 @@ type segmentStats struct {
 	sharedCount atomic.Int64
 
 	// Sharded to avoid a global hot cache line.
-	invalidatedKeyCount atomic.Int64
+	deletedEntryCount atomic.Int64
 }
 
 // Stats returns a detached snapshot of the current cache statistics.
@@ -152,7 +152,7 @@ func (cache *Cache[K, V]) Stats() Stats {
 	snapshot := Stats{
 		MaxEntries:                int64(cache.store.maxEntries),
 		SegmentCount:              int64(len(cache.store.segments)),
-		InvalidatedAllCount:       cache.stats.invalidatedAllCount.Load(),
+		ClearedEntryCount:         cache.stats.clearedEntryCount.Load(),
 		CleanupCount:              cache.stats.cleanupCount.Load(),
 		CleanupWorkerRunCount:     cache.stats.cleanupWorkerRunCount.Load(),
 		CleanupWorkerPendingCount: cache.stats.cleanupWorkerPendingCount.Load(),
@@ -181,7 +181,7 @@ func (cache *Cache[K, V]) Stats() Stats {
 		snapshot.LoadSupersededCount += counters.loadSupersededCount.Load()
 		snapshot.LoadDuration += time.Duration(counters.loadDurationNanos.Load())
 		snapshot.SharedCount += counters.sharedCount.Load()
-		snapshot.InvalidatedKeyCount += counters.invalidatedKeyCount.Load()
+		snapshot.DeletedEntryCount += counters.deletedEntryCount.Load()
 	}
 
 	return snapshot
@@ -222,20 +222,20 @@ func (stats *statsCollector) recordShared(index int) {
 	stats.segment(index).sharedCount.Add(1)
 }
 
-func (stats *statsCollector) recordKeyInvalidation(index int, count int64) {
+func (stats *statsCollector) recordDelete(index int, count int64) {
 	if count <= 0 {
 		return
 	}
 
-	stats.segment(index).invalidatedKeyCount.Add(count)
+	stats.segment(index).deletedEntryCount.Add(count)
 }
 
-func (stats *statsCollector) recordAllInvalidation(count int64) {
+func (stats *statsCollector) recordClear(count int64) {
 	if count <= 0 {
 		return
 	}
 
-	stats.invalidatedAllCount.Add(count)
+	stats.clearedEntryCount.Add(count)
 }
 
 func (stats *statsCollector) recordCleanup() {

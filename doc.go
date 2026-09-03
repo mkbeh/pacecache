@@ -2,7 +2,8 @@
 //
 // Cache keys may use any comparable Go type. Entries support TTL expiration,
 // optional sliding expiration and TTL jitter, LRU eviction, cache-aside
-// loading with duplicate load suppression, and explicit invalidation.
+// loading with configurable default or per-call loaders, duplicate load
+// suppression, and explicit removal.
 //
 // Cache mutations act as publication barriers for concurrent loads, preventing
 // superseded loader results from overwriting newer cache state.

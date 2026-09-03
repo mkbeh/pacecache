@@ -18,12 +18,14 @@ const (
 // Cache is a bounded in-process cache for keys of type K and values of type V.
 //
 // Cache uses exact LRU eviction within each storage segment and TTL expiration.
-// Entries may optionally use sliding expiration. GetOrLoad and GetOrLoadEntry
-// provide cache-aside loading and coalesce concurrent loads for the same key.
+// Entries may optionally use sliding expiration. GetOrLoad, GetOrLoadWith,
+// GetOrLoadEntry, and GetOrLoadEntryWith provide cache-aside loading and
+// coalesce concurrent loads for the same key.
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[K comparable, V any] struct {
-	name string
+	name   string
+	loader Loader[K, V]
 
 	store  *storage[K, V]
 	states []cacheState[K, V]
@@ -44,12 +46,42 @@ type Cache[K comparable, V any] struct {
 // Name is used by diagnostics and metrics and must not be empty.
 //
 // Unless overridden by options, New uses the default cache capacity, a single
-// storage segment, and no time-based expiration. Metrics and background cleanup
-// are disabled by default.
+// storage segment, and no time-based expiration. No default loader is
+// configured. Metrics and background cleanup are disabled by default.
 //
 // If metrics or background cleanup are configured, Close must be called to
 // release the associated resources.
-func New[K comparable, V any](name string, options ...Option) (*Cache[K, V], error) {
+func New[K comparable, V any](
+	name string,
+	options ...Option,
+) (*Cache[K, V], error) {
+	return newCache[K, V](name, nil, options...)
+}
+
+// NewWithDefaultLoader creates a Cache with the given logical name and default loader.
+//
+// The loader is used by GetOrLoad and GetOrLoadEntry when no live cache entry
+// exists. Per-call loaders may be supplied through GetOrLoadWith and
+// GetOrLoadEntryWith. Loader must not be nil.
+//
+// Name, options, metrics, and background cleanup have the same semantics as New.
+func NewWithDefaultLoader[K comparable, V any](
+	name string,
+	loader Loader[K, V],
+	options ...Option,
+) (*Cache[K, V], error) {
+	if loader == nil {
+		return nil, ErrNoLoader
+	}
+
+	return newCache[K, V](name, loader, options...)
+}
+
+func newCache[K comparable, V any](
+	name string,
+	loader Loader[K, V],
+	options ...Option,
+) (*Cache[K, V], error) {
 	settings, err := newCacheSettings(name, options...)
 	if err != nil {
 		return nil, fmt.Errorf("pacecache: %w", err)
@@ -67,7 +99,8 @@ func New[K comparable, V any](name string, options ...Option) (*Cache[K, V], err
 	}
 
 	cache := &Cache[K, V]{
-		name: settings.name,
+		name:   settings.name,
+		loader: loader,
 
 		store:  store,
 		states: make([]cacheState[K, V], len(store.segments)),

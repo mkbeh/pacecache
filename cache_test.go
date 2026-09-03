@@ -2,6 +2,7 @@ package pacecache
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,12 @@ func TestNilCacheIsSafe(t *testing.T) {
 	if entry, found := cache.GetEntry("key"); entry != (Entry[int]{}) || found {
 		t.Fatalf("nil Cache.GetEntry() = (%+v, %t), want zero/false", entry, found)
 	}
+	if _, _, err := cache.GetOrLoad(context.Background(), "key"); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("nil Cache.GetOrLoad() error = %v, want ErrNotInitialized", err)
+	}
+	if _, _, err := cache.GetOrLoadEntry(context.Background(), "key"); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("nil Cache.GetOrLoadEntry() error = %v, want ErrNotInitialized", err)
+	}
 
 	cache.Close()
 }
@@ -41,14 +48,14 @@ func TestZeroValueCacheIsSafe(t *testing.T) {
 	if entry, found := cache.GetEntry("key"); entry != (Entry[int]{}) || found {
 		t.Fatalf("zero Cache.GetEntry() = (%+v, %t), want zero/false", entry, found)
 	}
-	if removed := cache.CleanupExpired(); removed != 0 {
-		t.Fatalf("zero Cache.CleanupExpired() = %d, want 0", removed)
+	if removed := cache.DeleteExpired(); removed != 0 {
+		t.Fatalf("zero Cache.DeleteExpired() = %d, want 0", removed)
 	}
 
 	cache.Set("key", 1, DefaultExpiration)
-	cache.Invalidate()
-	cache.Invalidate("key")
-	cache.InvalidateAll()
+	cache.Delete()
+	cache.Delete("key")
+	cache.Clear()
 	cache.Close()
 
 	if got := cache.Stats(); got != (Stats{}) {
@@ -62,19 +69,17 @@ func TestZeroValueCacheLoadReturnsNotInitialized(t *testing.T) {
 	_, _, err := cache.GetOrLoad(
 		context.Background(),
 		"key",
-		func(context.Context) (int, bool, error) { return 1, true, nil },
 	)
-	if err == nil || err.Error() != "pacecache: cache is not initialized" {
-		t.Fatalf("zero Cache.GetOrLoad() error = %v", err)
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("zero Cache.GetOrLoad() error = %v, want ErrNotInitialized", err)
 	}
 
 	_, _, err = cache.GetOrLoadEntry(
 		context.Background(),
 		"key",
-		func(context.Context) (int, bool, error) { return 1, true, nil },
 	)
-	if err == nil || err.Error() != "pacecache: cache is not initialized" {
-		t.Fatalf("zero Cache.GetOrLoadEntry() error = %v", err)
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("zero Cache.GetOrLoadEntry() error = %v, want ErrNotInitialized", err)
 	}
 }
 
@@ -174,12 +179,12 @@ func TestCacheSupportsInt64Keys(t *testing.T) {
 		t.Fatalf("Get(42) = (%q, %t), want (Ada, true)", value, found)
 	}
 
-	cache.Invalidate(42)
+	cache.Delete(42)
 	if cache.Exists(42) || cache.RefreshTTL(42) {
-		t.Fatal("int64 key remains after Invalidate")
+		t.Fatal("int64 key remains after Delete")
 	}
 	if _, found := cache.Get(42); found {
-		t.Fatal("Get(42) hit after Invalidate")
+		t.Fatal("Get(42) hit after Delete")
 	}
 }
 
@@ -202,9 +207,9 @@ func TestCacheSupportsComparableStructKeys(t *testing.T) {
 		t.Fatalf("Get(equal) = (%d, %t), want (100, true)", value, found)
 	}
 
-	cache.Invalidate(equal)
+	cache.Delete(equal)
 	if _, found := cache.Get(stored); found {
-		t.Fatal("equal-key Invalidate did not remove stored key")
+		t.Fatal("equal-key Delete did not remove stored key")
 	}
 }
 

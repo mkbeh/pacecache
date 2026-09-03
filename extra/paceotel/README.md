@@ -9,7 +9,7 @@ The package is exporter-agnostic: applications own the OpenTelemetry SDK lifecyc
 
 ```bash
 go get github.com/mkbeh/pacecache/extra/paceotel
-````
+```
 
 ## Usage
 

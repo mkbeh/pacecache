@@ -35,8 +35,9 @@ func run(ctx context.Context) error {
 		},
 	}
 
-	users, err := pacecache.New[int64, user](
+	users, err := pacecache.NewWithDefaultLoader[int64, user](
 		"users",
+		repository.find,
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(30*time.Second),
 		pacecache.WithJitter(5*time.Second),
@@ -46,18 +47,8 @@ func run(ctx context.Context) error {
 	}
 	defer users.Close()
 
-	loadUser := func(id int64) (user, bool, error) {
-		return users.GetOrLoad(
-			ctx,
-			id,
-			func(ctx context.Context) (user, bool, error) {
-				return repository.find(ctx, id)
-			},
-		)
-	}
-
 	// The first lookup loads the user from the underlying repository.
-	first, found, err := loadUser(42)
+	first, found, err := users.GetOrLoad(ctx, 42)
 	if err != nil {
 		return fmt.Errorf("load user: %w", err)
 	}
@@ -86,7 +77,7 @@ func run(ctx context.Context) error {
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	// Not-found loader results are returned but are not stored by pacecache.
-	_, found, err = loadUser(404)
+	_, found, err = users.GetOrLoad(ctx, 404)
 	if err != nil {
 		return fmt.Errorf("load missing user: %w", err)
 	}
@@ -98,7 +89,7 @@ func run(ctx context.Context) error {
 	fmt.Println("not found:")
 	fmt.Printf("- first lookup: found=%t\n", found)
 
-	_, found, err = loadUser(404)
+	_, found, err = users.GetOrLoad(ctx, 404)
 	if err != nil {
 		return fmt.Errorf("load missing user again: %w", err)
 	}
@@ -109,20 +100,20 @@ func run(ctx context.Context) error {
 	fmt.Printf("- second lookup: found=%t\n", found)
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
-	// Explicit invalidation forces the next lookup to reload the value.
-	users.Invalidate(42)
+	// Explicit deletion forces the next lookup to reload the value.
+	users.Delete(42)
 
-	reloaded, found, err := loadUser(42)
+	reloaded, found, err := users.GetOrLoad(ctx, 42)
 	if err != nil {
-		return fmt.Errorf("reload invalidated user: %w", err)
+		return fmt.Errorf("reload deleted user: %w", err)
 	}
 	if !found {
 		return fmt.Errorf("reloaded user 42 was not found")
 	}
 
 	fmt.Println()
-	fmt.Println("invalidation:")
-	fmt.Printf("- lookup after invalidation: found=%t user=%+v\n", found, reloaded)
+	fmt.Println("deletion:")
+	fmt.Printf("- lookup after deletion: found=%t user=%+v\n", found, reloaded)
 	fmt.Printf("- repository loads: %d\n", repository.loads)
 
 	stats := users.Stats()
@@ -142,8 +133,8 @@ func run(ctx context.Context) error {
 		stats.LoadErrorCount,
 	)
 	fmt.Printf(
-		"- invalidated_keys=%d evictions=%d expirations=%d\n",
-		stats.InvalidatedKeyCount,
+		"- deleted_entries=%d evictions=%d expirations=%d\n",
+		stats.DeletedEntryCount,
 		stats.EvictionCount,
 		stats.ExpirationCount,
 	)

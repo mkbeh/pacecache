@@ -156,7 +156,7 @@ func (group *Group[K, V]) StartCall(key K) (handle Call[V], owner bool) {
 }
 
 // DoCall executes the shared work synchronously for a call returned by
-// StartCall with shouldLoad=true.
+// StartCall with owner=true.
 //
 // DoCall must be called exactly once for the owner call. Panics are captured so
 // every caller in the wave can observe the same panic through Wait.

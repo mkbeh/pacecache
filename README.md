@@ -72,7 +72,7 @@ defer cache.Close()
 ```
 <!-- @formatter:on -->
 
-Values can be stored, retrieved, checked, conditionally inserted, and invalidated:
+Values can be stored, retrieved, checked, conditionally inserted, and removed:
 
 <!-- @formatter:off -->
 ```go
@@ -94,35 +94,60 @@ exists := cache.Exists("key2")
 value, found = cache.GetOrSet("key4", "value4", pacecache.DefaultExpiration)
 entry, found = cache.GetOrSetEntry("key5", "value5", 30*time.Second)
 
-// Invalidate cached values.
-value, found = cache.GetAndInvalidate("key3") // read and invalidate atomically
-cache.Invalidate("key1")                      // invalidate one key
-cache.Invalidate("key2", "key4")              // invalidate multiple keys
-cache.InvalidateAll()                         // clear the cache
+// Remove cached values.
+value, found = cache.GetAndDelete("key3") // read and delete atomically
+cache.Delete("key1")                      // delete one key
+cache.Delete("key2", "key4")              // delete multiple keys
+cache.DeleteExpired()                     // remove expired entries
+cache.Clear()                             // remove all entries
 ```
 <!-- @formatter:on -->
 
-`GetOrLoad` can lazily load values on cache misses. The loader runs only when no live entry exists, and successful
-results are stored using the cache's default expiration:
+Use `GetOrLoadWith` to load a value on a cache miss with a per-call loader. The loader runs only when no live entry
+exists; successful results are cached using the cache's default expiration:
 
 <!-- @formatter:off -->
 ```go
 // Define a loader that fetches the value from an upstream source.
-loader := pacecache.Loader[string](
-    func(ctx context.Context) (string, bool, error) {
-        // Load from a database, file, or remote service.
-        return "loaded value", true, nil
-    },
-)
+loader := pacecache.Loader[string, string](func(ctx context.Context, key string) (string, bool, error) {
+    // Fetch data from a database, file, or remote service.
+    return "loaded " + key, true, nil
+})
 
 // Return the cached value or invoke the loader on a miss.
-value, found, err := cache.GetOrLoad(ctx, "key", loader)
+value, found, err := cache.GetOrLoadWith(ctx, "key", loader)
 if err != nil {
     panic(err)
 }
 
 if found {
-    fmt.Println("retrieved value:", value)
+    fmt.Println("retrieved value:", value) // loaded key
+}
+```
+<!-- @formatter:on -->
+
+If the same loader is reused across calls, configure it once with `NewWithDefaultLoader` and use `GetOrLoad`:
+
+<!-- @formatter:off -->
+```go
+cache, _ := pacecache.NewWithDefaultLoader[string, string](
+    "cache",
+    func(ctx context.Context, key string) (string, bool, error) {
+        // Fetch data from a database, file, or remote service.
+        return "loaded " + key, true, nil
+    },
+    pacecache.WithTTL(5*time.Minute),
+)
+defer cache.Close()
+
+// Return the cached value or invoke the configured loader on a miss.
+value, found, err := cache.GetOrLoad(ctx, "key")
+if err != nil {
+    panic(err)
+}
+
+if found {
+    fmt.Println("retrieved value:", value) // loaded key
 }
 ```
 <!-- @formatter:on -->
@@ -131,7 +156,7 @@ Missing results and loader errors are returned without being cached. Concurrent 
 loader execution, avoiding duplicate requests to the upstream source.
 
 Expired entries are never returned and are removed lazily when encountered. Periodic background cleanup can be enabled
-for entries that may remain untouched, or expired entries can be reclaimed explicitly when needed.
+for entries that may remain untouched:
 
 <!-- @formatter:off -->
 ```go
@@ -141,14 +166,11 @@ cache, _ := pacecache.New[string, string](
     pacecache.WithCleanupInterval(time.Minute), // background cleanup
 )
 defer cache.Close()
-
-// Or reclaim expired entries explicitly.
-cache.CleanupExpired()
 ```
 <!-- @formatter:on -->
 
-Background cleanup is optional. `Close` stops the cleanup worker and waits for it to exit.
-
+Background cleanup is optional. Expired entries can also be reclaimed explicitly with `DeleteExpired`. `Close` stops
+the cleanup worker and waits for it to exit.
 ## Concurrency semantics
 
 The cache coordinates concurrent loads and mutations to prevent duplicate upstream work and stale values from
@@ -189,17 +211,20 @@ The cache provides built-in runtime statistics and optional OpenTelemetry metric
 stats := cache.Stats()
 
 // Selected statistics available in the snapshot.
-_ = stats.EntryCount      // Current live entries
-_ = stats.MaxEntries      // Configured maximum capacity
-_ = stats.HitCount        // Cache hits
-_ = stats.MissCount       // Cache misses
-_ = stats.EvictionCount   // LRU evictions
-_ = stats.ExpirationCount // Expired entries removed
-_ = stats.LoadErrorCount  // Loader errors
+_ = stats.EntryCount        // Current resident entries
+_ = stats.MaxEntries        // Configured maximum capacity
+_ = stats.HitCount          // Cache hits
+_ = stats.MissCount         // Cache misses
+_ = stats.EvictionCount     // LRU evictions
+_ = stats.ExpirationCount   // Expired entries removed
+_ = stats.LoadErrorCount    // Loader errors
+_ = stats.DeletedEntryCount // Explicitly deleted entries
+_ = stats.ClearedEntryCount // Entries removed by full cache clears
 ```
 <!-- @formatter:on -->
 
-Statistics also include load outcomes, shared and superseded loads, invalidations, cleanup activity, and segment count.
+Statistics also include load outcomes, shared and superseded loads, deleted and cleared entry counts, cleanup activity,
+and segment count.
 
 Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel). OpenTelemetry configuration and
 exporter selection remain application concerns, so Prometheus, OTLP, and other exporters can be used without changing

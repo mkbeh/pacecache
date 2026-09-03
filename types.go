@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// Entry is a read-only snapshot returned by GetEntry, GetOrLoadEntry, or
-// GetOrSetEntry.
+// Entry is a read-only snapshot returned by GetEntry, GetOrLoadEntry,
+// GetOrLoadEntryWith, or GetOrSetEntry.
 //
 // Entry captures the value and expiration metadata observed by the operation.
 // The value is returned using normal Go value semantics and is not deep-copied.
@@ -30,14 +30,14 @@ func (entry Entry[V]) ExpiresAt() time.Time {
 	return entry.expiresAt
 }
 
-// Loader obtains one value from the underlying data source.
+// Loader obtains one value for key from the underlying data source.
 //
 // found=true means the value exists and may be cached. found=false with a nil
 // error means the value does not exist; not-found results are returned to the
 // caller but are not stored by pacecache.
 //
 // Loader errors are never cached.
-type Loader[V any] func(ctx context.Context) (value V, found bool, err error)
+type Loader[K comparable, V any] func(ctx context.Context, key K) (value V, found bool, err error)
 
 // loadResult carries the result of one shared cache lookup or loader invocation
 // together with expiration metadata for a cached value.

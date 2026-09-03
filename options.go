@@ -13,7 +13,7 @@ const (
 	maxDuration       = time.Duration(math.MaxInt64)
 )
 
-// Option configures a Cache.
+// Option configures a Cache created by New or NewWithDefaultLoader.
 type Option func(*cacheSettings) error
 
 type cacheSettings struct {
@@ -160,7 +160,7 @@ func WithSlidingExpiration() Option {
 //
 // Background cleanup is disabled by default. This is the only cleanup option
 // that starts a background worker; cleanup batch size and entry budget only
-// configure cleanup behavior. Manual cleanup through Cache.CleanupExpired is
+// configure cleanup behavior. Manual cleanup through Cache.DeleteExpired is
 // always available without this option. When background cleanup is enabled,
 // Close must be called to stop the cleaner goroutine.
 func WithCleanupInterval(interval time.Duration) Option {

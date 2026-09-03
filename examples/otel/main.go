@@ -61,8 +61,9 @@ func run(ctx context.Context) error {
 		},
 	}
 
-	users, err := pacecache.New[int64, user](
+	users, err := pacecache.NewWithDefaultLoader[int64, user](
 		"users",
+		repository.find,
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(time.Minute),
 		pacecache.WithMetrics(metrics),
@@ -71,16 +72,6 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("create users cache: %w", err)
 	}
 	defer users.Close()
-
-	loadUser := func(id int64) (user, bool, error) {
-		return users.GetOrLoad(
-			ctx,
-			id,
-			func(ctx context.Context) (user, bool, error) {
-				return repository.find(ctx, id)
-			},
-		)
-	}
 
 	// 3. Generate representative cache activity.
 	lookups := []struct {
@@ -94,7 +85,7 @@ func run(ctx context.Context) error {
 	}
 
 	for _, lookup := range lookups {
-		_, found, err := loadUser(lookup.id)
+		_, found, err := users.GetOrLoad(ctx, lookup.id)
 		if err != nil {
 			return fmt.Errorf("load user %d: %w", lookup.id, err)
 		}
@@ -103,10 +94,10 @@ func run(ctx context.Context) error {
 		}
 	}
 
-	users.Invalidate(42)
+	users.Delete(42)
 
-	if _, found, err := loadUser(42); err != nil {
-		return fmt.Errorf("reload invalidated user: %w", err)
+	if _, found, err := users.GetOrLoad(ctx, 42); err != nil {
+		return fmt.Errorf("reload deleted user: %w", err)
 	} else if !found {
 		return fmt.Errorf("reloaded user 42 was not found")
 	}
@@ -120,10 +111,7 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-func (repository *userRepository) find(
-	ctx context.Context,
-	id int64,
-) (user, bool, error) {
+func (repository *userRepository) find(ctx context.Context, id int64) (user, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return user{}, false, err
 	}

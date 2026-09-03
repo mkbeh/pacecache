@@ -37,10 +37,10 @@ func TestStatsSnapshotAggregatesSegments(t *testing.T) {
 		counters.loadSupersededCount.Store(int64(index + 9))
 		counters.loadDurationNanos.Store(int64((index + 10) * 100))
 		counters.sharedCount.Store(int64(index + 11))
-		counters.invalidatedKeyCount.Store(int64(index + 12))
+		counters.deletedEntryCount.Store(int64(index + 12))
 	}
 
-	collector.invalidatedAllCount.Store(13)
+	collector.clearedEntryCount.Store(13)
 	collector.cleanupCount.Store(14)
 	collector.cleanupWorkerRunCount.Store(15)
 	collector.cleanupWorkerPendingCount.Store(16)
@@ -59,7 +59,7 @@ func TestStatsSnapshotAggregatesSegments(t *testing.T) {
 	if got.LoadDuration != 2_100*time.Nanosecond {
 		t.Fatalf("LoadDuration = %v, want 2100ns", got.LoadDuration)
 	}
-	if got.SharedCount != 23 || got.InvalidatedKeyCount != 25 || got.InvalidatedAllCount != 13 {
+	if got.SharedCount != 23 || got.DeletedEntryCount != 25 || got.ClearedEntryCount != 13 {
 		t.Fatalf("atomic counters = %+v", got)
 	}
 	if got.CleanupCount != 14 || got.CleanupWorkerRunCount != 15 || got.CleanupWorkerPendingCount != 16 || got.CleanupWorkerDuration != 17*time.Nanosecond {
@@ -97,12 +97,12 @@ func TestStatsRecordHelpers(t *testing.T) {
 	collector := newStatsCollector(1)
 
 	collector.recordShared(0)
-	collector.recordKeyInvalidation(0, 0)
-	collector.recordKeyInvalidation(0, -1)
-	collector.recordKeyInvalidation(0, 3)
-	collector.recordAllInvalidation(0)
-	collector.recordAllInvalidation(-1)
-	collector.recordAllInvalidation(4)
+	collector.recordDelete(0, 0)
+	collector.recordDelete(0, -1)
+	collector.recordDelete(0, 3)
+	collector.recordClear(0)
+	collector.recordClear(-1)
+	collector.recordClear(4)
 	collector.recordCleanup()
 	collector.recordCleanupWorker(false, 10*time.Nanosecond)
 	collector.recordCleanupWorker(true, 20*time.Nanosecond)
@@ -110,11 +110,11 @@ func TestStatsRecordHelpers(t *testing.T) {
 	if collector.segment(0).sharedCount.Load() != 1 {
 		t.Fatalf("sharedCount = %d, want 1", collector.segment(0).sharedCount.Load())
 	}
-	if collector.segment(0).invalidatedKeyCount.Load() != 3 {
-		t.Fatalf("invalidatedKeyCount = %d, want 3", collector.segment(0).invalidatedKeyCount.Load())
+	if collector.segment(0).deletedEntryCount.Load() != 3 {
+		t.Fatalf("deletedEntryCount = %d, want 3", collector.segment(0).deletedEntryCount.Load())
 	}
-	if collector.invalidatedAllCount.Load() != 4 {
-		t.Fatalf("invalidatedAllCount = %d, want 4", collector.invalidatedAllCount.Load())
+	if collector.clearedEntryCount.Load() != 4 {
+		t.Fatalf("clearedEntryCount = %d, want 4", collector.clearedEntryCount.Load())
 	}
 	if collector.cleanupCount.Load() != 1 {
 		t.Fatalf("cleanupCount = %d, want 1", collector.cleanupCount.Load())
@@ -142,7 +142,7 @@ func TestStatsConcurrentWithCacheOperations(t *testing.T) {
 				cache.Set(key, iteration, NoExpiration)
 				cache.Get(key)
 				if iteration%11 == 0 {
-					cache.Invalidate(key)
+					cache.Delete(key)
 				}
 			}
 		}(worker)

@@ -20,7 +20,12 @@ type cacheState[K comparable, V any] struct {
 	group singleflight.Group[K, loadResult[V]]
 }
 
-// GetOrLoad returns the cached value for key or obtains it from loader.
+// GetOrLoad returns the cached value for key or obtains it from the configured
+// default loader.
+//
+// On a cache miss, GetOrLoad returns ErrNoLoader when the cache was created
+// without a default loader. Use NewWithDefaultLoader to configure one, or
+// GetOrLoadWith to supply a loader for a specific operation.
 //
 // A loader result with found=true is cached using the configured TTL. A result
 // with found=false and a nil error is returned to callers but is not cached.
@@ -30,35 +35,56 @@ type cacheState[K comparable, V any] struct {
 // shared load executes the loader synchronously with its context. Other callers
 // may stop waiting independently when their own contexts are canceled.
 //
-// Set, GetOrSet and GetOrSetEntry insertions, and invalidation act as
-// publication barriers for the same key. If a successful loader result is
-// superseded by a newer cache mutation before publication, GetOrLoad discards
-// the loader result and returns ErrLoadSuperseded. Loader errors take precedence
-// over ErrLoadSuperseded. Mutations of other keys do not affect the load, even
-// when those keys share the same segment.
+// Set, GetOrSet and GetOrSetEntry insertions, Delete, and Clear act as
+// publication barriers for the affected key or keys. If a successful loader
+// result is superseded by a newer cache mutation before publication, GetOrLoad
+// discards the loader result and returns ErrLoadSuperseded. Loader errors take
+// precedence over ErrLoadSuperseded. Mutations of other keys do not affect the
+// load, even when those keys share the same segment.
 //
-// A loader must not call GetOrLoad or GetOrLoadEntry recursively for the same
-// key, because the nested call would wait for the load already in progress.
+// A loader must not call GetOrLoad, GetOrLoadWith, GetOrLoadEntry, or
+// GetOrLoadEntryWith recursively for the same key, because the nested call
+// would wait for the load already in progress.
 //
 // When err is non-nil, the returned value is the zero value of V and found is
 // false.
 func (cache *Cache[K, V]) GetOrLoad(
 	ctx context.Context,
 	key K,
-	loader Loader[V],
 ) (V, bool, error) {
-	result, err := cache.getOrLoad(ctx, key, loader)
-	if err != nil {
+	if cache == nil {
 		var zero V
-
-		return zero, false, err
+		return zero, false, ErrNotInitialized
 	}
 
-	return result.value, result.found, nil
+	return cache.getOrLoadValue(ctx, key, cache.loader)
+}
+
+// GetOrLoadWith returns the cached value for key or obtains it from loader.
+//
+// The supplied loader is used instead of the cache's configured default loader
+// when this caller starts the shared load. If another caller already owns a
+// same-key load, GetOrLoadWith joins that wave and the supplied loader is not
+// invoked. Loader is only required when no live cache entry exists; a nil
+// loader therefore returns ErrNoLoader on a miss.
+//
+// GetOrLoadWith otherwise has the same cache, singleflight, publication, and
+// statistics semantics as GetOrLoad.
+func (cache *Cache[K, V]) GetOrLoadWith(
+	ctx context.Context,
+	key K,
+	loader Loader[K, V],
+) (V, bool, error) {
+	return cache.getOrLoadValue(ctx, key, loader)
 }
 
 // GetOrLoadEntry returns a read-only cache entry snapshot for key or obtains
-// the value from loader and publishes it before returning the snapshot.
+// the value from the configured default loader and publishes it before
+// returning the snapshot.
+//
+// On a cache miss, GetOrLoadEntry returns ErrNoLoader when the cache was
+// created without a default loader. Use NewWithDefaultLoader to configure one, or
+// GetOrLoadEntryWith to supply a loader for a specific operation.
 //
 // A loader result with found=false is not cached and returns the zero Entry with
 // found=false. GetOrLoadEntry otherwise has the same lookup, singleflight,
@@ -72,7 +98,51 @@ func (cache *Cache[K, V]) GetOrLoad(
 func (cache *Cache[K, V]) GetOrLoadEntry(
 	ctx context.Context,
 	key K,
-	loader Loader[V],
+) (Entry[V], bool, error) {
+	if cache == nil {
+		return Entry[V]{}, false, ErrNotInitialized
+	}
+
+	return cache.getOrLoadEntry(ctx, key, cache.loader)
+}
+
+// GetOrLoadEntryWith returns a read-only cache entry snapshot for key or
+// obtains the value from loader and publishes it before returning the snapshot.
+//
+// The supplied loader is used instead of the cache's configured default loader
+// when this caller starts the shared load. If another caller already owns a
+// same-key load, GetOrLoadEntryWith joins that wave and the supplied loader is
+// not invoked. Loader is only required when no live cache entry exists; a nil
+// loader therefore returns ErrNoLoader on a miss.
+//
+// GetOrLoadEntryWith otherwise has the same semantics as GetOrLoadEntry.
+func (cache *Cache[K, V]) GetOrLoadEntryWith(
+	ctx context.Context,
+	key K,
+	loader Loader[K, V],
+) (Entry[V], bool, error) {
+	return cache.getOrLoadEntry(ctx, key, loader)
+}
+
+func (cache *Cache[K, V]) getOrLoadValue(
+	ctx context.Context,
+	key K,
+	loader Loader[K, V],
+) (V, bool, error) {
+	result, err := cache.getOrLoad(ctx, key, loader)
+	if err != nil {
+		var zero V
+
+		return zero, false, err
+	}
+
+	return result.value, result.found, nil
+}
+
+func (cache *Cache[K, V]) getOrLoadEntry(
+	ctx context.Context,
+	key K,
+	loader Loader[K, V],
 ) (Entry[V], bool, error) {
 	var zero Entry[V]
 
@@ -91,24 +161,21 @@ func (cache *Cache[K, V]) GetOrLoadEntry(
 	}, true, nil
 }
 
-// getOrLoad implements the shared operation behind GetOrLoad and
-// GetOrLoadEntry. Both public methods observe the same cache entry, execute the
-// same singleflight wave, and linearize publication at the same point. The
-// returned deadline is metadata from that same observed or published entry;
-// callers that do not need it simply ignore it.
+// getOrLoad implements the shared operation behind the default-loader and
+// per-call-loader methods. All public load methods observe the same cache entry,
+// execute the same singleflight wave, and linearize publication at the same
+// point. The returned deadline is metadata from that same observed or published
+// entry; callers that do not need it simply ignore it.
 func (cache *Cache[K, V]) getOrLoad(
 	ctx context.Context,
 	key K,
-	loader Loader[V],
+	loader Loader[K, V],
 ) (loadResult[V], error) {
 	if !cache.initialized() {
-		return loadResult[V]{}, errors.New("pacecache: cache is not initialized")
+		return loadResult[V]{}, ErrNotInitialized
 	}
 	if ctx == nil {
 		return loadResult[V]{}, errors.New("pacecache: context is nil")
-	}
-	if loader == nil {
-		return loadResult[V]{}, errors.New("pacecache: loader is nil")
 	}
 
 	index := cache.store.segmentIndex(key)
@@ -124,6 +191,10 @@ func (cache *Cache[K, V]) getOrLoad(
 
 	if err := ctx.Err(); err != nil {
 		return loadResult[V]{}, err
+	}
+
+	if loader == nil {
+		return loadResult[V]{}, ErrNoLoader
 	}
 
 	state := &cache.states[index]
@@ -154,7 +225,7 @@ func (cache *Cache[K, V]) getOrLoad(
 
 				startedAt := cache.store.now()
 
-				value, found, err := loader(ctx)
+				value, found, err := loader(ctx, key)
 
 				finishedAt := cache.store.now()
 
