@@ -439,7 +439,7 @@ func (segment *storageSegment[K, V]) deleteAll() int64 {
 
 	deleted := int64(len(segment.entries))
 
-	clear(segment.entries)
+	segment.entries = make(map[K]*entry[K, V])
 
 	segment.head = nil
 	segment.tail = nil
