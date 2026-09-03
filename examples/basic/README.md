@@ -5,7 +5,7 @@ This example demonstrates a typical cache-aside workflow with `pacecache` and an
 ## Key Concepts Covered
 
 * Configuring a bounded generic cache with TTL and jitter
-* Loading missing values with `GetOrLoad`
+* Configuring a default loader and loading missing values with `GetOrLoad`
 * Reading cached values and expiration metadata with `Get` and `GetEntry`
 * Handling missing loader results without caching them
 * Deleting cached values and reloading them from the repository

@@ -2,6 +2,7 @@ package pacecache
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,12 @@ func TestNilCacheIsSafe(t *testing.T) {
 	}
 	if entry, found := cache.GetEntry("key"); entry != (Entry[int]{}) || found {
 		t.Fatalf("nil Cache.GetEntry() = (%+v, %t), want zero/false", entry, found)
+	}
+	if _, _, err := cache.GetOrLoad(context.Background(), "key"); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("nil Cache.GetOrLoad() error = %v, want ErrNotInitialized", err)
+	}
+	if _, _, err := cache.GetOrLoadEntry(context.Background(), "key"); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("nil Cache.GetOrLoadEntry() error = %v, want ErrNotInitialized", err)
 	}
 
 	cache.Close()
@@ -62,19 +69,17 @@ func TestZeroValueCacheLoadReturnsNotInitialized(t *testing.T) {
 	_, _, err := cache.GetOrLoad(
 		context.Background(),
 		"key",
-		func(context.Context) (int, bool, error) { return 1, true, nil },
 	)
-	if err == nil || err.Error() != "pacecache: cache is not initialized" {
-		t.Fatalf("zero Cache.GetOrLoad() error = %v", err)
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("zero Cache.GetOrLoad() error = %v, want ErrNotInitialized", err)
 	}
 
 	_, _, err = cache.GetOrLoadEntry(
 		context.Background(),
 		"key",
-		func(context.Context) (int, bool, error) { return 1, true, nil },
 	)
-	if err == nil || err.Error() != "pacecache: cache is not initialized" {
-		t.Fatalf("zero Cache.GetOrLoadEntry() error = %v", err)
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("zero Cache.GetOrLoadEntry() error = %v, want ErrNotInitialized", err)
 	}
 }
 

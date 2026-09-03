@@ -9,17 +9,201 @@ import (
 	"time"
 )
 
+func TestNewWithLoaderRejectsNilLoader(t *testing.T) {
+	cache, err := NewWithLoader[string, int]("users", nil)
+	if cache != nil {
+		t.Fatal("cache must be nil for nil default loader")
+	}
+	if !errors.Is(err, ErrNoLoader) {
+		t.Fatalf("NewWithLoader() error = %v, want ErrNoLoader", err)
+	}
+}
+
+func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
+	var calls atomic.Int64
+	var loadedKey string
+
+	cache, err := NewWithLoader[string, int](
+		"users",
+		func(_ context.Context, key string) (int, bool, error) {
+			calls.Add(1)
+			loadedKey = key
+
+			return 42, true, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewWithLoader() error = %v", err)
+	}
+	t.Cleanup(cache.Close)
+
+	for range 2 {
+		value, found, err := cache.GetOrLoad(context.Background(), "key")
+		if err != nil || !found || value != 42 {
+			t.Fatalf("GetOrLoad() = (%d, %t, %v), want (42, true, nil)", value, found, err)
+		}
+	}
+
+	if calls.Load() != 1 {
+		t.Fatalf("loader calls = %d, want 1", calls.Load())
+	}
+	if loadedKey != "key" {
+		t.Fatalf("loader key = %q, want key", loadedKey)
+	}
+}
+
+func TestGetOrLoadWithoutDefaultLoaderReturnsErrNoLoaderOnMiss(t *testing.T) {
+	cache := mustNewCache[int](t, "users")
+	cache.Set("cached", 7, NoExpiration)
+
+	value, found, err := cache.GetOrLoad(context.Background(), "cached")
+	if err != nil || !found || value != 7 {
+		t.Fatalf("cached GetOrLoad() = (%d, %t, %v), want (7, true, nil)", value, found, err)
+	}
+
+	value, found, err = cache.GetOrLoad(context.Background(), "missing")
+	if value != 0 || found || !errors.Is(err, ErrNoLoader) {
+		t.Fatalf("missing GetOrLoad() = (%d, %t, %v), want zero/false/ErrNoLoader", value, found, err)
+	}
+}
+
+func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
+	var defaultCalls atomic.Int64
+	var overrideCalls atomic.Int64
+
+	cache, err := NewWithLoader[string, int](
+		"users",
+		func(context.Context, string) (int, bool, error) {
+			defaultCalls.Add(1)
+
+			return 1, true, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewWithLoader() error = %v", err)
+	}
+	t.Cleanup(cache.Close)
+
+	value, found, err := cache.GetOrLoadWith(
+		context.Background(),
+		"override",
+		func(context.Context, string) (int, bool, error) {
+			overrideCalls.Add(1)
+
+			return 2, true, nil
+		},
+	)
+	if err != nil || !found || value != 2 {
+		t.Fatalf("GetOrLoadWith() = (%d, %t, %v), want (2, true, nil)", value, found, err)
+	}
+	if defaultCalls.Load() != 0 || overrideCalls.Load() != 1 {
+		t.Fatalf("loader calls = default:%d override:%d, want 0/1", defaultCalls.Load(), overrideCalls.Load())
+	}
+
+	value, found, err = cache.GetOrLoad(context.Background(), "default")
+	if err != nil || !found || value != 1 {
+		t.Fatalf("GetOrLoad() = (%d, %t, %v), want (1, true, nil)", value, found, err)
+	}
+}
+
+func TestGetOrLoadEntryUsesDefaultLoader(t *testing.T) {
+	cache, err := NewWithLoader[string, int](
+		"users",
+		func(context.Context, string) (int, bool, error) {
+			return 42, true, nil
+		},
+		WithTTL(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("NewWithLoader() error = %v", err)
+	}
+	t.Cleanup(cache.Close)
+
+	entry, found, err := cache.GetOrLoadEntry(context.Background(), "key")
+	if err != nil || !found || entry.Value() != 42 || entry.ExpiresAt().IsZero() {
+		t.Fatalf("GetOrLoadEntry() = (%+v, %t, %v), want value=42 with expiration", entry, found, err)
+	}
+}
+
+func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var defaultCalls atomic.Int64
+	var overrideCalls atomic.Int64
+
+	cache, err := NewWithLoader[string, int](
+		"users",
+		func(context.Context, string) (int, bool, error) {
+			defaultCalls.Add(1)
+			close(started)
+			<-release
+
+			return 42, true, nil
+		},
+		WithMaxEntries(8),
+		WithSegmentCount(1),
+	)
+	if err != nil {
+		t.Fatalf("NewWithLoader() error = %v", err)
+	}
+	t.Cleanup(cache.Close)
+
+	ownerDone := make(chan error, 1)
+	go func() {
+		value, found, err := cache.GetOrLoad(context.Background(), "key")
+		if err == nil && (!found || value != 42) {
+			err = errors.New("unexpected default-loader result")
+		}
+		ownerDone <- err
+	}()
+	waitTestSignal(t, started)
+
+	waiterContext := newObservedWaitContext()
+	waiterDone := make(chan error, 1)
+	go func() {
+		value, found, err := cache.GetOrLoadWith(
+			waiterContext,
+			"key",
+			func(context.Context, string) (int, bool, error) {
+				overrideCalls.Add(1)
+
+				return 99, true, nil
+			},
+		)
+		if err == nil && (!found || value != 42) {
+			err = errors.New("unexpected explicit-loader result")
+		}
+		waiterDone <- err
+	}()
+
+	waitTestSignal(t, waiterContext.waiting)
+	close(release)
+
+	if err := receiveTestValue(t, ownerDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveTestValue(t, waiterDone); err != nil {
+		t.Fatal(err)
+	}
+	if defaultCalls.Load() != 1 || overrideCalls.Load() != 0 {
+		t.Fatalf("loader calls = default:%d override:%d, want 1/0", defaultCalls.Load(), overrideCalls.Load())
+	}
+	if cache.Stats().SharedCount == 0 {
+		t.Fatal("SharedCount = 0, want shared caller recorded")
+	}
+}
+
 func TestGetOrLoadCachesPositiveResult(t *testing.T) {
 	cache := mustNewCache[int](t, "users")
 	var calls atomic.Int64
 
-	loader := func(context.Context) (int, bool, error) {
+	loader := func(context.Context, string) (int, bool, error) {
 		calls.Add(1)
 		return 42, true, nil
 	}
 
 	for range 2 {
-		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
+		value, found, err := cache.GetOrLoadWith(context.Background(), "key", loader)
 		if err != nil || !found || value != 42 {
 			t.Fatalf("GetOrLoad() = (%d, %t, %v), want (42, true, nil)", value, found, err)
 		}
@@ -37,13 +221,13 @@ func TestGetOrLoadNotFoundIsNotCached(t *testing.T) {
 	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
 	var calls atomic.Int64
 
-	loader := func(context.Context) (int, bool, error) {
+	loader := func(context.Context, string) (int, bool, error) {
 		calls.Add(1)
 		return 99, false, nil
 	}
 
 	for range 2 {
-		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
+		value, found, err := cache.GetOrLoadWith(context.Background(), "key", loader)
 		if err != nil || found || value != 0 {
 			t.Fatalf("GetOrLoad() = (%d, %t, %v), want (0, false, nil)", value, found, err)
 		}
@@ -70,19 +254,19 @@ func TestGetOrLoadEntryPositiveAndNotFound(t *testing.T) {
 		WithTTL(time.Minute),
 	)
 
-	entry, found, err := cache.GetOrLoadEntry(
+	entry, found, err := cache.GetOrLoadEntryWith(
 		context.Background(),
 		"positive",
-		func(context.Context) (int, bool, error) { return 42, true, nil },
+		func(context.Context, string) (int, bool, error) { return 42, true, nil },
 	)
 	if err != nil || !found || entry.Value() != 42 || entry.ExpiresAt().IsZero() {
 		t.Fatalf("GetOrLoadEntry(positive) = (%+v, %t, %v)", entry, found, err)
 	}
 
-	entry, found, err = cache.GetOrLoadEntry(
+	entry, found, err = cache.GetOrLoadEntryWith(
 		context.Background(),
 		"missing",
-		func(context.Context) (int, bool, error) { return 99, false, nil },
+		func(context.Context, string) (int, bool, error) { return 99, false, nil },
 	)
 	if err != nil || found || entry != (Entry[int]{}) {
 		t.Fatalf("GetOrLoadEntry(missing) = (%+v, %t, %v), want zero/false/nil", entry, found, err)
@@ -97,13 +281,13 @@ func TestGetOrLoadErrorsAreNotCached(t *testing.T) {
 	sentinel := errors.New("load failed")
 	var calls atomic.Int64
 
-	loader := func(context.Context) (int, bool, error) {
+	loader := func(context.Context, string) (int, bool, error) {
 		calls.Add(1)
 		return 123, true, sentinel
 	}
 
 	for range 2 {
-		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
+		value, found, err := cache.GetOrLoadWith(context.Background(), "key", loader)
 		if value != 0 || found || !errors.Is(err, sentinel) {
 			t.Fatalf("GetOrLoad() = (%d, %t, %v), want zero/false/sentinel", value, found, err)
 		}
@@ -127,10 +311,10 @@ func TestGetOrLoadLoaderPanicPropagatesToCallerAndDoesNotPoisonKey(t *testing.T)
 			recovered = recover()
 		}()
 
-		_, _, _ = cache.GetOrLoad(
+		_, _, _ = cache.GetOrLoadWith(
 			context.Background(),
 			"key",
-			func(context.Context) (int, bool, error) {
+			func(context.Context, string) (int, bool, error) {
 				panic(wantErr)
 			},
 		)
@@ -147,10 +331,10 @@ func TestGetOrLoadLoaderPanicPropagatesToCallerAndDoesNotPoisonKey(t *testing.T)
 		t.Fatal("panicking loader result became resident")
 	}
 
-	value, found, err := cache.GetOrLoad(
+	value, found, err := cache.GetOrLoadWith(
 		context.Background(),
 		"key",
-		func(context.Context) (int, bool, error) {
+		func(context.Context, string) (int, bool, error) {
 			return 42, true, nil
 		},
 	)
@@ -162,17 +346,17 @@ func TestGetOrLoadLoaderPanicPropagatesToCallerAndDoesNotPoisonKey(t *testing.T)
 func TestGetOrLoadValidatesContextAndLoader(t *testing.T) {
 	cache := mustNewCache[int](t, "users")
 
-	if _, _, err := cache.GetOrLoad(nil, "key", func(context.Context) (int, bool, error) {
+	if _, _, err := cache.GetOrLoadWith(nil, "key", func(context.Context, string) (int, bool, error) {
 		return 1, true, nil
 	}); err == nil || err.Error() != "pacecache: context is nil" {
 		t.Fatalf("nil context error = %v", err)
 	}
 
-	if _, _, err := cache.GetOrLoad(context.Background(), "key", nil); err == nil || err.Error() != "pacecache: loader is nil" {
-		t.Fatalf("nil loader error = %v", err)
+	if _, _, err := cache.GetOrLoadWith(context.Background(), "key", nil); !errors.Is(err, ErrNoLoader) {
+		t.Fatalf("nil loader error = %v, want ErrNoLoader", err)
 	}
 
-	if _, _, err := cache.GetOrLoadEntry(nil, "key", func(context.Context) (int, bool, error) {
+	if _, _, err := cache.GetOrLoadEntryWith(nil, "key", func(context.Context, string) (int, bool, error) {
 		return 1, true, nil
 	}); err == nil || err.Error() != "pacecache: context is nil" {
 		t.Fatalf("GetOrLoadEntry nil context error = %v", err)
@@ -185,7 +369,7 @@ func TestGetOrLoadCanceledMissDoesNotStartLoader(t *testing.T) {
 	cancel()
 
 	var calls atomic.Int64
-	value, found, err := cache.GetOrLoad(ctx, "key", func(context.Context) (int, bool, error) {
+	value, found, err := cache.GetOrLoadWith(ctx, "key", func(context.Context, string) (int, bool, error) {
 		calls.Add(1)
 		return 1, true, nil
 	})
@@ -204,7 +388,7 @@ func TestGetOrLoadCachedHitIgnoresCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	value, found, err := cache.GetOrLoad(ctx, "key", func(context.Context) (int, bool, error) {
+	value, found, err := cache.GetOrLoadWith(ctx, "key", func(context.Context, string) (int, bool, error) {
 		t.Fatal("loader called for cached hit")
 		return 0, false, nil
 	})
@@ -220,7 +404,7 @@ func TestGetOrLoadCoalescesConcurrentMisses(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int64
 
-	loader := func(ctx context.Context) (int, bool, error) {
+	loader := func(ctx context.Context, _ string) (int, bool, error) {
 		if calls.Add(1) == 1 {
 			close(started)
 		}
@@ -235,7 +419,7 @@ func TestGetOrLoadCoalescesConcurrentMisses(t *testing.T) {
 
 	ownerDone := make(chan error, 1)
 	go func() {
-		value, found, err := cache.GetOrLoad(context.Background(), "key", loader)
+		value, found, err := cache.GetOrLoadWith(context.Background(), "key", loader)
 		if err == nil && (!found || value != 42) {
 			err = errors.New("unexpected owner result")
 		}
@@ -256,7 +440,7 @@ func TestGetOrLoadCoalescesConcurrentMisses(t *testing.T) {
 		go func(ctx context.Context) {
 			defer group.Done()
 
-			value, found, err := cache.GetOrLoad(ctx, "key", loader)
+			value, found, err := cache.GetOrLoadWith(ctx, "key", loader)
 			if err != nil {
 				errs <- err
 				return
@@ -297,10 +481,10 @@ func TestGetOrLoadWaiterCanCancelWithoutCancelingSharedLoad(t *testing.T) {
 	ownerDone := make(chan error, 1)
 
 	go func() {
-		value, found, err := cache.GetOrLoad(
+		value, found, err := cache.GetOrLoadWith(
 			context.Background(),
 			"key",
-			func(context.Context) (int, bool, error) {
+			func(context.Context, string) (int, bool, error) {
 				close(started)
 				<-release
 				return 5, true, nil
@@ -316,7 +500,7 @@ func TestGetOrLoadWaiterCanCancelWithoutCancelingSharedLoad(t *testing.T) {
 	waiterContext := newObservedWaitContext()
 	waiterDone := make(chan error, 1)
 	go func() {
-		_, _, err := cache.GetOrLoad(waiterContext, "key", func(context.Context) (int, bool, error) {
+		_, _, err := cache.GetOrLoadWith(waiterContext, "key", func(context.Context, string) (int, bool, error) {
 			return 99, true, nil
 		})
 		waiterDone <- err
@@ -356,10 +540,10 @@ func TestGetOrLoadAndGetOrLoadEntryShareOneWave(t *testing.T) {
 		err   error
 	}, 1)
 	go func() {
-		value, found, err := cache.GetOrLoad(
+		value, found, err := cache.GetOrLoadWith(
 			context.Background(),
 			"key",
-			func(context.Context) (int, bool, error) {
+			func(context.Context, string) (int, bool, error) {
 				calls.Add(1)
 				close(started)
 				<-release
@@ -382,10 +566,10 @@ func TestGetOrLoadAndGetOrLoadEntryShareOneWave(t *testing.T) {
 		err   error
 	}, 1)
 	go func() {
-		entry, found, err := cache.GetOrLoadEntry(
+		entry, found, err := cache.GetOrLoadEntryWith(
 			entryContext,
 			"key",
-			func(context.Context) (int, bool, error) {
+			func(context.Context, string) (int, bool, error) {
 				calls.Add(1)
 				return 99, true, nil
 			},
@@ -433,16 +617,16 @@ func TestGetOrLoadUsesGenericKeyIdentity(t *testing.T) {
 	equal := testCompositeKey{TenantID: 7, UserID: 42}
 	var calls atomic.Int64
 
-	loader := func(context.Context) (int, bool, error) {
+	loader := func(context.Context, testCompositeKey) (int, bool, error) {
 		calls.Add(1)
 		return 100, true, nil
 	}
 
-	value, found, err := cache.GetOrLoad(context.Background(), key, loader)
+	value, found, err := cache.GetOrLoadWith(context.Background(), key, loader)
 	if err != nil || !found || value != 100 {
 		t.Fatalf("first GetOrLoad() = (%d, %t, %v)", value, found, err)
 	}
-	value, found, err = cache.GetOrLoad(context.Background(), equal, loader)
+	value, found, err = cache.GetOrLoadWith(context.Background(), equal, loader)
 	if err != nil || !found || value != 100 {
 		t.Fatalf("equal-key GetOrLoad() = (%d, %t, %v)", value, found, err)
 	}
@@ -625,10 +809,10 @@ func TestGetOrLoadEntrySetSameKeyReturnsSupersededZeroEntry(t *testing.T) {
 	}, 1)
 
 	go func() {
-		entry, found, err := cache.GetOrLoadEntry(
+		entry, found, err := cache.GetOrLoadEntryWith(
 			context.Background(),
 			"key",
-			func(context.Context) (string, bool, error) {
+			func(context.Context, string) (string, bool, error) {
 				close(started)
 				<-release
 				return "old", true, nil
@@ -664,10 +848,10 @@ func startPublicationLoad(
 	result := make(chan publicationLoadResult[string], 1)
 
 	go func() {
-		loaded, gotFound, err := cache.GetOrLoad(
+		loaded, gotFound, err := cache.GetOrLoadWith(
 			context.Background(),
 			key,
-			func(context.Context) (string, bool, error) {
+			func(context.Context, string) (string, bool, error) {
 				close(started)
 				<-release
 				return value, found, loaderErr

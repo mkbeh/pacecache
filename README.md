@@ -102,21 +102,30 @@ cache.Clear()                             // clear the cache
 ```
 <!-- @formatter:on -->
 
-`GetOrLoad` can lazily load values on cache misses. The loader runs only when no live entry exists, and successful
-results are stored using the cache's default expiration:
+`GetOrLoad` can lazily load values on cache misses using a default loader configured for the cache. Successful results
+are stored using the cache's default expiration:
 
 <!-- @formatter:off -->
 ```go
-// Define a loader that fetches the value from an upstream source.
-loader := pacecache.Loader[string](
-    func(ctx context.Context) (string, bool, error) {
+loader := pacecache.Loader[string, string](
+    func(ctx context.Context, key string) (string, bool, error) {
         // Load from a database, file, or remote service.
-        return "loaded value", true, nil
+        return "loaded " + key, true, nil
     },
 )
 
-// Return the cached value or invoke the loader on a miss.
-value, found, err := cache.GetOrLoad(ctx, "key", loader)
+cache, err := pacecache.NewWithLoader[string, string](
+    "cache",
+    loader,
+    pacecache.WithTTL(5*time.Minute),
+)
+if err != nil {
+    panic(err)
+}
+defer cache.Close()
+
+// Return the cached value or invoke the default loader on a miss.
+value, found, err := cache.GetOrLoad(ctx, "key")
 if err != nil {
     panic(err)
 }
@@ -126,6 +135,9 @@ if found {
 }
 ```
 <!-- @formatter:on -->
+
+Use `GetOrLoadWith` or `GetOrLoadEntryWith` when a specific operation should use a different loader. Caches created
+with `New` can still use these per-call loaders without configuring a default loader.
 
 Missing results and loader errors are returned without being cached. Concurrent misses for the same key share a single
 loader execution, avoiding duplicate requests to the upstream source.
