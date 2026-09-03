@@ -13,7 +13,7 @@ const (
 	maxDuration       = time.Duration(math.MaxInt64)
 )
 
-// Option configures a Cache created by New or NewWithLoader.
+// Option configures a Cache created by New or NewWithDefaultLoader.
 type Option func(*cacheSettings) error
 
 type cacheSettings struct {

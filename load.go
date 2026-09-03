@@ -24,7 +24,7 @@ type cacheState[K comparable, V any] struct {
 // default loader.
 //
 // On a cache miss, GetOrLoad returns ErrNoLoader when the cache was created
-// without a default loader. Use NewWithLoader to configure one, or
+// without a default loader. Use NewWithDefaultLoader to configure one, or
 // GetOrLoadWith to supply a loader for a specific operation.
 //
 // A loader result with found=true is cached using the configured TTL. A result
@@ -83,7 +83,7 @@ func (cache *Cache[K, V]) GetOrLoadWith(
 // returning the snapshot.
 //
 // On a cache miss, GetOrLoadEntry returns ErrNoLoader when the cache was
-// created without a default loader. Use NewWithLoader to configure one, or
+// created without a default loader. Use NewWithDefaultLoader to configure one, or
 // GetOrLoadEntryWith to supply a loader for a specific operation.
 //
 // A loader result with found=false is not cached and returns the zero Entry with

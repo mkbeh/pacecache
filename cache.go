@@ -51,18 +51,25 @@ type Cache[K comparable, V any] struct {
 //
 // If metrics or background cleanup are configured, Close must be called to
 // release the associated resources.
-func New[K comparable, V any](name string, options ...Option) (*Cache[K, V], error) {
+func New[K comparable, V any](
+	name string,
+	options ...Option,
+) (*Cache[K, V], error) {
 	return newCache[K, V](name, nil, options...)
 }
 
-// NewWithLoader creates a Cache with the given logical name and default loader.
+// NewWithDefaultLoader creates a Cache with the given logical name and default loader.
 //
 // The loader is used by GetOrLoad and GetOrLoadEntry when no live cache entry
 // exists. Per-call loaders may be supplied through GetOrLoadWith and
 // GetOrLoadEntryWith. Loader must not be nil.
 //
 // Name, options, metrics, and background cleanup have the same semantics as New.
-func NewWithLoader[K comparable, V any](name string, loader Loader[K, V], options ...Option) (*Cache[K, V], error) {
+func NewWithDefaultLoader[K comparable, V any](
+	name string,
+	loader Loader[K, V],
+	options ...Option,
+) (*Cache[K, V], error) {
 	if loader == nil {
 		return nil, ErrNoLoader
 	}

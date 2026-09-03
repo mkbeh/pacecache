@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-func TestNewWithLoaderRejectsNilLoader(t *testing.T) {
-	cache, err := NewWithLoader[string, int]("users", nil)
+func TestNewWithDefaultLoaderRejectsNilLoader(t *testing.T) {
+	cache, err := NewWithDefaultLoader[string, int]("users", nil)
 	if cache != nil {
 		t.Fatal("cache must be nil for nil default loader")
 	}
 	if !errors.Is(err, ErrNoLoader) {
-		t.Fatalf("NewWithLoader() error = %v, want ErrNoLoader", err)
+		t.Fatalf("NewWithDefaultLoader() error = %v, want ErrNoLoader", err)
 	}
 }
 
@@ -23,7 +23,7 @@ func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
 	var calls atomic.Int64
 	var loadedKey string
 
-	cache, err := NewWithLoader[string, int](
+	cache, err := NewWithDefaultLoader[string, int](
 		"users",
 		func(_ context.Context, key string) (int, bool, error) {
 			calls.Add(1)
@@ -33,7 +33,7 @@ func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
 		},
 	)
 	if err != nil {
-		t.Fatalf("NewWithLoader() error = %v", err)
+		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
 	t.Cleanup(cache.Close)
 
@@ -71,7 +71,7 @@ func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
 	var defaultCalls atomic.Int64
 	var overrideCalls atomic.Int64
 
-	cache, err := NewWithLoader[string, int](
+	cache, err := NewWithDefaultLoader[string, int](
 		"users",
 		func(context.Context, string) (int, bool, error) {
 			defaultCalls.Add(1)
@@ -80,7 +80,7 @@ func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
 		},
 	)
 	if err != nil {
-		t.Fatalf("NewWithLoader() error = %v", err)
+		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
 	t.Cleanup(cache.Close)
 
@@ -107,7 +107,7 @@ func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
 }
 
 func TestGetOrLoadEntryUsesDefaultLoader(t *testing.T) {
-	cache, err := NewWithLoader[string, int](
+	cache, err := NewWithDefaultLoader[string, int](
 		"users",
 		func(context.Context, string) (int, bool, error) {
 			return 42, true, nil
@@ -115,7 +115,7 @@ func TestGetOrLoadEntryUsesDefaultLoader(t *testing.T) {
 		WithTTL(time.Minute),
 	)
 	if err != nil {
-		t.Fatalf("NewWithLoader() error = %v", err)
+		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
 	t.Cleanup(cache.Close)
 
@@ -131,7 +131,7 @@ func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
 	var defaultCalls atomic.Int64
 	var overrideCalls atomic.Int64
 
-	cache, err := NewWithLoader[string, int](
+	cache, err := NewWithDefaultLoader[string, int](
 		"users",
 		func(context.Context, string) (int, bool, error) {
 			defaultCalls.Add(1)
@@ -144,7 +144,7 @@ func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
 		WithSegmentCount(1),
 	)
 	if err != nil {
-		t.Fatalf("NewWithLoader() error = %v", err)
+		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
 	t.Cleanup(cache.Close)
 

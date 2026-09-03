@@ -8,7 +8,7 @@ This release streamlines cache removal and makes cache-aside loading configurabl
 
 ### Added
 
-* **Default Loader:** Added `NewWithLoader` to configure a key-aware loader once and reuse it across load operations.
+* **Default Loader:** Added `NewWithDefaultLoader` to configure a key-aware loader once and reuse it across load operations.
 * **Per-Call Loaders:** Added `GetOrLoadWith` and `GetOrLoadEntryWith` for overriding the configured loader for a
   specific operation.
 * **Load Errors:** Added `ErrNoLoader` and `ErrNotInitialized` for explicit loader and cache initialization errors.

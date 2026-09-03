@@ -8,7 +8,7 @@ var (
 	ErrNotInitialized = errors.New("pacecache: cache is not initialized")
 
 	// ErrNoLoader indicates that an operation requires a loader but none is
-	// available. NewWithLoader also returns ErrNoLoader when passed a nil loader.
+	// available. NewWithDefaultLoader also returns ErrNoLoader when passed a nil loader.
 	ErrNoLoader = errors.New("pacecache: loader is not configured")
 
 	// ErrLoadSuperseded indicates that a successful loader result was made stale
