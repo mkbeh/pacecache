@@ -1,13 +1,10 @@
 package paceotel
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/mkbeh/pacecache"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -49,7 +46,7 @@ const (
 	removalOperationClear  = "clear"
 )
 
-type cacheMetricInstruments struct {
+type metricInstruments struct {
 	entryCount                metric.Int64ObservableGauge
 	entryLimit                metric.Int64ObservableGauge
 	segmentCount              metric.Int64ObservableGauge
@@ -67,7 +64,7 @@ type cacheMetricInstruments struct {
 	expirationCount           metric.Int64ObservableCounter
 }
 
-type cacheMetricAttributes struct {
+type metricAttributes struct {
 	base metric.ObserveOption
 
 	hit  metric.ObserveOption
@@ -81,66 +78,10 @@ type cacheMetricAttributes struct {
 	clearOperation  metric.ObserveOption
 }
 
-// RegisterCache registers OpenTelemetry metrics for one cache.
-func (metrics *Metrics) RegisterCache(
-	cache pacecache.StatsProvider,
-) (pacecache.MetricsRegistration, error) {
-	if metrics == nil {
-		return nil, errors.New("paceotel: metrics is nil")
-	}
-
-	if cache == nil {
-		return nil, errors.New("paceotel: cache is nil")
-	}
-
-	name := cache.Name()
-	if name == "" {
-		return nil, errors.New("paceotel: cache name is empty")
-	}
-
-	meterProvider := metrics.meterProvider
-	if meterProvider == nil {
-		meterProvider = otel.GetMeterProvider()
-	}
-
-	return registerCacheMetrics(cache, name, meterProvider)
-}
-
-func registerCacheMetrics(
-	cache pacecache.StatsProvider,
-	name string,
-	provider metric.MeterProvider,
-) (pacecache.MetricsRegistration, error) {
-	meter := provider.Meter(instrumentationName)
-
-	instruments, err := newCacheMetricInstruments(meter)
-	if err != nil {
-		return nil, err
-	}
-
-	attributes := newCacheMetricAttributes(name)
-
-	registration, err := meter.RegisterCallback(
-		func(_ context.Context, observer metric.Observer) error {
-			instruments.observe(observer, cache.Stats(), attributes)
-
-			return nil
-		},
-		instruments.observables()...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("paceotel: register metrics callback: %w", err)
-	}
-
-	return &metricsRegistration{
-		registration: registration,
-	}, nil
-}
-
-func (instruments cacheMetricInstruments) observe(
+func (instruments metricInstruments) observe(
 	observer metric.Observer,
 	stats pacecache.Stats,
-	attributes cacheMetricAttributes,
+	attributes metricAttributes,
 ) {
 	observer.ObserveInt64(
 		instruments.entryCount,
@@ -257,7 +198,7 @@ func (instruments cacheMetricInstruments) observe(
 	)
 }
 
-func (instruments cacheMetricInstruments) observables() []metric.Observable {
+func (instruments metricInstruments) observables() []metric.Observable {
 	return []metric.Observable{
 		instruments.entryCount,
 		instruments.entryLimit,
@@ -277,10 +218,8 @@ func (instruments cacheMetricInstruments) observables() []metric.Observable {
 	}
 }
 
-func newCacheMetricInstruments(
-	meter metric.Meter,
-) (cacheMetricInstruments, error) {
-	var instruments cacheMetricInstruments
+func newMetricInstruments(meter metric.Meter) (metricInstruments, error) {
+	var instruments metricInstruments
 	var err error
 
 	instruments.entryCount, err = meter.Int64ObservableGauge(
@@ -291,7 +230,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{entry}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(entryCountMetricName, err)
 	}
 
@@ -303,7 +242,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{entry}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(entryLimitMetricName, err)
 	}
 
@@ -315,7 +254,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{segment}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(segmentCountMetricName, err)
 	}
 
@@ -327,7 +266,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{lookup}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(lookupCountMetricName, err)
 	}
 
@@ -339,7 +278,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{load}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(loadCountMetricName, err)
 	}
 
@@ -351,7 +290,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("s"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(loadTimeMetricName, err)
 	}
 
@@ -363,7 +302,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{request}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(loadSharedCountMetricName, err)
 	}
 
@@ -375,7 +314,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{load}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(loadSupersededCountMetricName, err)
 	}
 
@@ -387,7 +326,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{entry}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(removedCountMetricName, err)
 	}
 
@@ -399,7 +338,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{cleanup}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(cleanupCountMetricName, err)
 	}
 
@@ -411,7 +350,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{run}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(cleanupWorkerRunCountMetricName, err)
 	}
 
@@ -423,7 +362,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{run}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(cleanupWorkerPendingCountMetricName, err)
 	}
 
@@ -435,7 +374,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("s"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(cleanupWorkerTimeMetricName, err)
 	}
 
@@ -447,7 +386,7 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{entry}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(evictionCountMetricName, err)
 	}
 
@@ -459,19 +398,21 @@ func newCacheMetricInstruments(
 		metric.WithUnit("{entry}"),
 	)
 	if err != nil {
-		return cacheMetricInstruments{},
+		return metricInstruments{},
 			newMetricError(expirationCountMetricName, err)
 	}
 
 	return instruments, nil
 }
 
-func newCacheMetricAttributes(name string) cacheMetricAttributes {
-	base := []attribute.KeyValue{
-		attribute.String(
-			cacheNameAttribute,
-			name,
-		),
+func newMetricAttributes(name string) metricAttributes {
+	var base []attribute.KeyValue
+
+	if name != "" {
+		base = append(
+			base,
+			attribute.String(cacheNameAttribute, name),
+		)
 	}
 
 	option := func(extra ...attribute.KeyValue) metric.ObserveOption {
@@ -481,7 +422,7 @@ func newCacheMetricAttributes(name string) cacheMetricAttributes {
 		)
 	}
 
-	return cacheMetricAttributes{
+	return metricAttributes{
 		base: option(),
 
 		hit: option(

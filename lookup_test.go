@@ -8,7 +8,6 @@ import (
 func TestCacheExists(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 	)
@@ -32,7 +31,6 @@ func TestCacheExists(t *testing.T) {
 func TestCacheRefreshTTL(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(time.Minute),
@@ -92,7 +90,7 @@ func TestCacheExistsAndRefreshTTLRemoveExpiredEntries(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cache := mustNewCache[int](t, "users", WithMaxEntries(2), WithSegmentCount(1))
+			cache := mustNewCache[int](t, WithMaxEntries(2), WithSegmentCount(1))
 			stats := cache.stats.segment(0)
 			deadline := cache.store.now()
 
@@ -125,7 +123,7 @@ func TestCacheExistsAndRefreshTTLRemoveExpiredEntries(t *testing.T) {
 }
 
 func TestCacheExistsAndRefreshTTLDoNotUpdateLRU(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(2), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(2), WithSegmentCount(1))
 
 	cache.Set("a", 1, time.Minute)
 	cache.Set("b", 2, time.Minute)
@@ -149,7 +147,7 @@ func TestCacheExistsAndRefreshTTLDoNotUpdateLRU(t *testing.T) {
 }
 
 func TestCacheSetGetAndLRU(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(2), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(2), WithSegmentCount(1))
 
 	if value, found := cache.Get("missing"); value != 0 || found {
 		t.Fatalf("Get(missing) = (%d, %t), want (0, false)", value, found)
@@ -182,7 +180,6 @@ func TestCacheSetGetAndLRU(t *testing.T) {
 func TestCacheGetEntry(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(4),
 		WithSegmentCount(1),
 		WithTTL(time.Minute),

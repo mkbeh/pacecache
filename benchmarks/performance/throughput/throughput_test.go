@@ -133,7 +133,6 @@ func newThroughputCache(
 
 	for range throughputPopulationAttempts {
 		cache, err := pacecache.New[string, string](
-			"throughput",
 			pacecache.WithMaxEntries(maxEntries),
 			pacecache.WithSegmentCount(throughputSegments),
 		)

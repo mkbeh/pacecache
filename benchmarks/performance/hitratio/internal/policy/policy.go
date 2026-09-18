@@ -15,7 +15,6 @@ type Policy struct {
 
 func New(capacity int, segments int) (*Policy, error) {
 	cache, err := pacecache.New[uint64, uint64](
-		"hit-ratio",
 		pacecache.WithMaxEntries(capacity),
 		pacecache.WithSegmentCount(segments),
 	)

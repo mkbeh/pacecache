@@ -1,38 +1,32 @@
 package pacecache
 
-// StatsProvider exposes one cache's identity and statistics to a metrics
-// implementation.
-type StatsProvider interface {
+// MetricsSource exposes cache identity and statistics to a metrics implementation.
+type MetricsSource interface {
 	Name() string
 	Stats() Stats
 }
 
-// Metrics registers metrics for a Cache.
+// Metrics registers cache statistics with a metrics implementation.
 //
-// Implementations must be safe to reuse across multiple caches. RegisterCache
-// may be called concurrently.
+// Implementations must be safe to reuse across multiple caches. Register may
+// be called concurrently.
 //
-// If RegisterCache returns an error, the implementation must release any
-// resources created during the registration attempt.
+// If Register returns an error, the implementation must release any resources
+// created during the registration attempt.
 type Metrics interface {
-	RegisterCache(cache StatsProvider) (MetricsRegistration, error)
+	Register(source MetricsSource) error
 }
 
-// MetricsRegistration owns a metrics registration associated with one Cache.
-// Close is called once when the Cache is closed.
-type MetricsRegistration interface {
-	Close()
-}
-
-// cacheStatsProvider exposes only the capabilities required by Metrics.
-type cacheStatsProvider[K comparable, V any] struct {
+// metricsSource exposes only the capabilities required by Metrics.
+type metricsSource[K comparable, V any] struct {
+	name  string
 	cache *Cache[K, V]
 }
 
-func (provider cacheStatsProvider[K, V]) Name() string {
-	return provider.cache.Name()
+func (source metricsSource[K, V]) Name() string {
+	return source.name
 }
 
-func (provider cacheStatsProvider[K, V]) Stats() Stats {
-	return provider.cache.Stats()
+func (source metricsSource[K, V]) Stats() Stats {
+	return source.cache.Stats()
 }

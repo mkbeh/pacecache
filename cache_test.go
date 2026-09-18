@@ -11,9 +11,6 @@ import (
 func TestNilCacheIsSafe(t *testing.T) {
 	var cache *Cache[string, int]
 
-	if got := cache.Name(); got != "" {
-		t.Fatalf("nil Cache.Name() = %q, want empty", got)
-	}
 	if cache.Exists("key") {
 		t.Fatal("nil Cache.Exists() = true, want false")
 	}
@@ -84,7 +81,7 @@ func TestZeroValueCacheLoadReturnsNotInitialized(t *testing.T) {
 }
 
 func TestCloseIsIdempotentAndCacheRemainsUsable(t *testing.T) {
-	cache, err := New[string, int]("users")
+	cache, err := New[string, int]()
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -140,7 +137,7 @@ func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
 }
 
 func TestNewEnablesSlidingExpiration(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithSlidingExpiration())
+	cache := mustNewCache[int](t, WithSlidingExpiration())
 	for index := range cache.store.segments {
 		if !cache.store.segments[index].slidingExpiration {
 			t.Fatalf("segment %d sliding expiration disabled", index)
@@ -149,11 +146,11 @@ func TestNewEnablesSlidingExpiration(t *testing.T) {
 }
 
 func TestNewWrapsConfigurationError(t *testing.T) {
-	cache, err := New[string, int]("")
+	cache, err := New[string, int](WithMaxEntries(2), WithSegmentCount(3))
 	if cache != nil {
 		t.Fatal("cache must be nil for invalid configuration")
 	}
-	if err == nil || err.Error() != "pacecache: invalid configuration: cache name must not be empty" {
+	if err == nil || err.Error() != "pacecache: invalid configuration: segment count must not exceed max entries" {
 		t.Fatalf("New() error = %v", err)
 	}
 }
@@ -164,7 +161,7 @@ type testCompositeKey struct {
 }
 
 func TestCacheSupportsInt64Keys(t *testing.T) {
-	cache, err := New[int64, string]("users", WithMaxEntries(8), WithSegmentCount(2))
+	cache, err := New[int64, string](WithMaxEntries(8), WithSegmentCount(2))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -189,7 +186,7 @@ func TestCacheSupportsInt64Keys(t *testing.T) {
 }
 
 func TestCacheSupportsComparableStructKeys(t *testing.T) {
-	cache, err := New[testCompositeKey, int]("users", WithMaxEntries(8), WithSegmentCount(2))
+	cache, err := New[testCompositeKey, int](WithMaxEntries(8), WithSegmentCount(2))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -255,10 +252,10 @@ func (ctx *observedWaitContext) cancel() {
 
 const testTimeout = 5 * time.Second
 
-func mustNewCache[V any](t *testing.T, name string, options ...Option) *Cache[string, V] {
+func mustNewCache[V any](t *testing.T, options ...Option) *Cache[string, V] {
 	t.Helper()
 
-	cache, err := New[string, V](name, options...)
+	cache, err := New[string, V](options...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

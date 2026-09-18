@@ -24,7 +24,6 @@ const (
 //
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[K comparable, V any] struct {
-	name   string
 	loader Loader[K, V]
 
 	store  *storage[K, V]
@@ -33,40 +32,31 @@ type Cache[K comparable, V any] struct {
 
 	cleanupPolicy cleanupPolicy
 	cleanup       *cleanupWorker[K, V]
-
-	metrics   MetricsRegistration
-	closeOnce sync.Once
+	closeOnce     sync.Once
 
 	ttl    time.Duration
 	jitter time.Duration
 }
 
-// New creates a Cache with the given logical name.
-//
-// Name is used by diagnostics and metrics and must not be empty.
+// New creates a Cache.
 //
 // Unless overridden by options, New uses the default cache capacity, a single
 // storage segment, and no time-based expiration. No default loader is
 // configured. Metrics and background cleanup are disabled by default.
-//
-// If metrics or background cleanup are configured, Close must be called to
-// release the associated resources.
 func New[K comparable, V any](
-	name string,
 	options ...Option,
 ) (*Cache[K, V], error) {
-	return newCache[K, V](name, nil, options...)
+	return newCache[K, V](nil, options...)
 }
 
-// NewWithDefaultLoader creates a Cache with the given logical name and default loader.
+// NewWithDefaultLoader creates a Cache with the given default loader.
 //
 // The loader is used by GetOrLoad and GetOrLoadEntry when no live cache entry
 // exists. Per-call loaders may be supplied through GetOrLoadFunc and
 // GetOrLoadEntryFunc. Loader must not be nil.
 //
-// Name, options, metrics, and background cleanup have the same semantics as New.
+// Options, metrics, and background cleanup have the same semantics as New.
 func NewWithDefaultLoader[K comparable, V any](
-	name string,
 	loader Loader[K, V],
 	options ...Option,
 ) (*Cache[K, V], error) {
@@ -74,15 +64,14 @@ func NewWithDefaultLoader[K comparable, V any](
 		return nil, ErrNoLoader
 	}
 
-	return newCache[K, V](name, loader, options...)
+	return newCache[K, V](loader, options...)
 }
 
 func newCache[K comparable, V any](
-	name string,
 	loader Loader[K, V],
 	options ...Option,
 ) (*Cache[K, V], error) {
-	settings, err := newCacheSettings(name, options...)
+	settings, err := newSettings(options...)
 	if err != nil {
 		return nil, fmt.Errorf("pacecache: %w", err)
 	}
@@ -99,7 +88,6 @@ func newCache[K comparable, V any](
 	}
 
 	cache := &Cache[K, V]{
-		name:   settings.name,
 		loader: loader,
 
 		store:  store,
@@ -112,7 +100,7 @@ func newCache[K comparable, V any](
 		jitter: settings.jitter,
 	}
 
-	if err := cache.registerMetrics(settings.metrics); err != nil {
+	if err := cache.registerMetrics(settings.name, settings.metrics); err != nil {
 		return nil, fmt.Errorf("pacecache: register metrics: %w", err)
 	}
 
@@ -129,24 +117,10 @@ func newCache[K comparable, V any](
 	return cache, nil
 }
 
-// Name returns the logical cache name.
-func (cache *Cache[K, V]) Name() string {
-	if cache == nil {
-		return ""
-	}
-
-	return cache.name
-}
-
-// Close releases background resources associated with the cache. Close is
-// idempotent.
+// Close stops background cleanup and waits for the worker to exit.
 //
-// If background cleanup is configured, Close stops it and waits for the cleaner
-// goroutine to exit. If metrics are configured, Close also releases their
-// registration.
-//
-// Close does not clear or disable the cache. Cache operations remain available,
-// but stopped background resources are not restarted.
+// Close does not clear or disable the cache. Repeated calls are safe. Close is
+// a no-op on a nil Cache.
 func (cache *Cache[K, V]) Close() {
 	if cache == nil {
 		return
@@ -155,10 +129,6 @@ func (cache *Cache[K, V]) Close() {
 	cache.closeOnce.Do(func() {
 		if cache.cleanup != nil {
 			cache.cleanup.close()
-		}
-
-		if cache.metrics != nil {
-			cache.metrics.Close()
 		}
 	})
 }
@@ -177,23 +147,17 @@ func (cache *Cache[K, V]) effectiveTTL(expiration time.Duration) time.Duration {
 	return jitteredTTL(ttl, cache.jitter)
 }
 
-func (cache *Cache[K, V]) registerMetrics(metrics Metrics) error {
+func (cache *Cache[K, V]) registerMetrics(name string, metrics Metrics) error {
 	if metrics == nil {
 		return nil
 	}
 
-	registration, err := metrics.RegisterCache(
-		cacheStatsProvider[K, V]{
+	return metrics.Register(
+		metricsSource[K, V]{
+			name:  name,
 			cache: cache,
 		},
 	)
-	if err != nil {
-		return err
-	}
-
-	cache.metrics = registration
-
-	return nil
 }
 
 func (cache *Cache[K, V]) initialized() bool {

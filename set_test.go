@@ -9,7 +9,7 @@ import (
 )
 
 func TestCacheSetOverwritesExistingValue(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(4), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(4), WithSegmentCount(1))
 
 	cache.Set("key", 1, time.Minute)
 	cache.Set("key", 2, NoExpiration)
@@ -26,7 +26,6 @@ func TestCacheSetOverwritesExistingValue(t *testing.T) {
 func TestCacheStoresTTLPolicyForDefaultCustomAndNoExpiration(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(10*time.Second),
@@ -61,7 +60,6 @@ func TestCacheStoresTTLPolicyForDefaultCustomAndNoExpiration(t *testing.T) {
 func TestCacheGetOrSet(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(10*time.Second),
@@ -120,7 +118,6 @@ func TestCacheGetOrSet(t *testing.T) {
 func TestCacheGetOrSetExpirationPolicies(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(10*time.Second),
@@ -160,7 +157,7 @@ func TestCacheGetOrSetExpirationPolicies(t *testing.T) {
 }
 
 func TestCacheGetOrSetUsesNoExpirationByDefault(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 
 	value, found := cache.GetOrSet("key", 42, DefaultExpiration)
 	if found || value != 42 {
@@ -177,7 +174,7 @@ func TestCacheGetOrSetUsesNoExpirationByDefault(t *testing.T) {
 }
 
 func TestCacheGetOrSetExpiredEntry(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 	index := cache.store.segmentIndex("key")
 
 	cache.store.setAt(
@@ -211,7 +208,7 @@ func TestCacheGetOrSetExpiredEntry(t *testing.T) {
 }
 
 func TestCacheGetOrSetIsAtomic(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 
 	const callers = 32
 
@@ -288,7 +285,7 @@ func TestCacheGetOrSetIsAtomic(t *testing.T) {
 }
 
 func TestCacheGetOrSetSupersedesInflightLoad(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -347,7 +344,6 @@ func TestZeroValueCacheGetOrSet(t *testing.T) {
 func TestCacheGetOrSetEntry(t *testing.T) {
 	cache := mustNewCache[int](
 		t,
-		"users",
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(10*time.Second),
@@ -396,7 +392,7 @@ func TestCacheGetOrSetEntry(t *testing.T) {
 }
 
 func TestCacheGetOrSetEntryNoExpirationMetadata(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 
 	entry, found := cache.GetOrSetEntry("key", 42, DefaultExpiration)
 	if found || entry.Value() != 42 {
@@ -412,7 +408,7 @@ func TestCacheGetOrSetEntryNoExpirationMetadata(t *testing.T) {
 }
 
 func TestCacheGetOrSetEntryIsAtomic(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 
 	const callers = 32
 
@@ -487,7 +483,7 @@ func TestCacheGetOrSetEntryIsAtomic(t *testing.T) {
 }
 
 func TestCacheGetOrSetEntrySupersedesInflightLoad(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(8), WithSegmentCount(1))
+	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
 
 	started := make(chan struct{})
 	release := make(chan struct{})

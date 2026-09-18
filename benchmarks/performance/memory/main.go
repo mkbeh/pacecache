@@ -38,7 +38,6 @@ func main() {
 	runtime.ReadMemStats(&before)
 
 	cache, err := pacecache.New[string, string](
-		"memory",
 		pacecache.WithMaxEntries(*capacity),
 		pacecache.WithSegmentCount(segmentCount),
 		pacecache.WithTTL(expiration),

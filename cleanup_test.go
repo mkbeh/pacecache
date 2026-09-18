@@ -87,7 +87,7 @@ func TestCleanupWorkerBackgroundRemovesExpiredEntry(t *testing.T) {
 }
 
 func TestCacheCloseStopsBackgroundCleanup(t *testing.T) {
-	cache, err := New[string, int]("users", WithCleanupInterval(time.Millisecond))
+	cache, err := New[string, int](WithCleanupInterval(time.Millisecond))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -190,7 +190,6 @@ func TestCleanupWorkerRunSchedulesContinuationForBacklog(t *testing.T) {
 
 func TestCacheCleanupWorkerUsesConfiguredLimits(t *testing.T) {
 	cache, err := New[string, int](
-		"users",
 		WithCleanupInterval(time.Hour),
 		WithCleanupBatchSize(7),
 		WithCleanupEntryBudget(11),
