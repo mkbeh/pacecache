@@ -2,98 +2,197 @@ package pacecache
 
 import (
 	"errors"
-	"sync/atomic"
+	"slices"
+	"sync"
 	"testing"
 )
 
 type testMetrics struct {
-	registerCalls atomic.Int64
-	provider      StatsProvider
-	registration  MetricsRegistration
+	mu sync.Mutex
+
+	registerCalls int
+	sources       []MetricsSource
 	err           error
-	providerClose bool
 }
 
-func (metrics *testMetrics) RegisterCache(provider StatsProvider) (MetricsRegistration, error) {
-	metrics.registerCalls.Add(1)
-	metrics.provider = provider
-	_, metrics.providerClose = provider.(interface{ Close() })
-	return metrics.registration, metrics.err
+func (metrics *testMetrics) Register(source MetricsSource) error {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+
+	metrics.registerCalls++
+
+	if metrics.err != nil {
+		return metrics.err
+	}
+
+	metrics.sources = append(metrics.sources, source)
+
+	return nil
 }
 
-type testMetricsRegistration struct {
-	closeCalls atomic.Int64
+func (metrics *testMetrics) snapshot() (int, []MetricsSource) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+
+	return metrics.registerCalls, slices.Clone(metrics.sources)
 }
 
-func (registration *testMetricsRegistration) Close() {
-	registration.closeCalls.Add(1)
-}
+func TestMetricsRegistersSource(t *testing.T) {
+	metrics := &testMetrics{}
 
-func TestMetricsRegistrationLifecycle(t *testing.T) {
-	registration := &testMetricsRegistration{}
-	metrics := &testMetrics{registration: registration}
-
-	cache, err := New[string, int]("users", WithMetrics(metrics))
+	cache, err := New[string, int](
+		WithName("users"),
+		WithMetrics(metrics),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if metrics.registerCalls.Load() != 1 {
-		t.Fatalf("RegisterCache calls = %d, want 1", metrics.registerCalls.Load())
+	registerCalls, sources := metrics.snapshot()
+	if registerCalls != 1 {
+		t.Fatalf("Register() calls = %d, want 1", registerCalls)
 	}
-	if metrics.provider == nil {
-		t.Fatal("metrics provider is nil")
+	if len(sources) != 1 {
+		t.Fatalf("registered sources = %d, want 1", len(sources))
 	}
-	if metrics.provider.Name() != "users" {
-		t.Fatalf("provider name = %q, want users", metrics.provider.Name())
+
+	source := sources[0]
+	if source.Name() != "users" {
+		t.Fatalf("source name = %q, want users", source.Name())
 	}
-	if metrics.providerClose {
-		t.Fatal("metrics provider unexpectedly exposes Cache.Close")
+	if _, ok := source.(interface{ StartCleanup() }); ok {
+		t.Fatal("metrics source unexpectedly exposes Cache.StartCleanup")
+	}
+	if _, ok := source.(interface{ StopCleanup() }); ok {
+		t.Fatal("metrics source unexpectedly exposes Cache.StopCleanup")
 	}
 
 	cache.Set("a", 1, NoExpiration)
-	if got := metrics.provider.Stats().EntryCount; got != 1 {
-		t.Fatalf("provider Stats().EntryCount = %d, want 1", got)
-	}
-
-	cache.Close()
-	cache.Close()
-	if registration.closeCalls.Load() != 1 {
-		t.Fatalf("registration Close calls = %d, want 1", registration.closeCalls.Load())
+	if got := source.Stats().EntryCount; got != 1 {
+		t.Fatalf("source Stats().EntryCount = %d, want 1", got)
 	}
 }
 
-func TestMetricsRegistrationError(t *testing.T) {
+func TestMetricsRegistersMultipleCaches(t *testing.T) {
+	metrics := &testMetrics{}
+
+	users, err := New[string, int](
+		WithName("users"),
+		WithMetrics(metrics),
+	)
+	if err != nil {
+		t.Fatalf("New(users) error = %v", err)
+	}
+
+	sessions, err := New[string, int](
+		WithName("sessions"),
+		WithMetrics(metrics),
+	)
+	if err != nil {
+		t.Fatalf("New(sessions) error = %v", err)
+	}
+
+	users.Set("a", 1, NoExpiration)
+	sessions.Set("a", 1, NoExpiration)
+	sessions.Set("b", 2, NoExpiration)
+
+	registerCalls, sources := metrics.snapshot()
+	if registerCalls != 2 {
+		t.Fatalf("Register() calls = %d, want 2", registerCalls)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("registered sources = %d, want 2", len(sources))
+	}
+
+	byName := make(map[string]MetricsSource, len(sources))
+	for _, source := range sources {
+		if _, ok := source.(interface{ StartCleanup() }); ok {
+			t.Fatalf(
+				"metrics source %q unexpectedly exposes Cache.StartCleanup",
+				source.Name(),
+			)
+		}
+		if _, ok := source.(interface{ StopCleanup() }); ok {
+			t.Fatalf(
+				"metrics source %q unexpectedly exposes Cache.StopCleanup",
+				source.Name(),
+			)
+		}
+
+		if _, exists := byName[source.Name()]; exists {
+			t.Fatalf("metrics source %q registered more than once", source.Name())
+		}
+
+		byName[source.Name()] = source
+	}
+
+	usersSource, ok := byName["users"]
+	if !ok {
+		t.Fatal("users metrics source not registered")
+	}
+	if got := usersSource.Stats().EntryCount; got != 1 {
+		t.Fatalf("users Stats().EntryCount = %d, want 1", got)
+	}
+
+	sessionsSource, ok := byName["sessions"]
+	if !ok {
+		t.Fatal("sessions metrics source not registered")
+	}
+	if got := sessionsSource.Stats().EntryCount; got != 2 {
+		t.Fatalf("sessions Stats().EntryCount = %d, want 2", got)
+	}
+}
+
+func TestMetricsRegistersUnnamedSource(t *testing.T) {
+	metrics := &testMetrics{}
+
+	if _, err := New[string, int](WithMetrics(metrics)); err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, sources := metrics.snapshot()
+	if len(sources) != 1 {
+		t.Fatalf("registered sources = %d, want 1", len(sources))
+	}
+	if sources[0].Name() != "" {
+		t.Fatalf("source name = %q, want empty", sources[0].Name())
+	}
+}
+
+func TestMetricsRegisterError(t *testing.T) {
 	sentinel := errors.New("register failed")
 	metrics := &testMetrics{err: sentinel}
 
-	cache, err := New[string, int]("users", WithMetrics(metrics))
+	cache, err := New[string, int](
+		WithName("users"),
+		WithMetrics(metrics),
+	)
 	if cache != nil {
 		t.Fatal("cache must be nil when metrics registration fails")
 	}
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("error = %v, want wrapped sentinel", err)
 	}
-	if metrics.registerCalls.Load() != 1 {
-		t.Fatalf("RegisterCache calls = %d, want 1", metrics.registerCalls.Load())
+
+	registerCalls, sources := metrics.snapshot()
+	if registerCalls != 1 {
+		t.Fatalf("Register() calls = %d, want 1", registerCalls)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("registered sources = %d, want 0", len(sources))
 	}
 }
 
-func TestMetricsMayReturnNilRegistration(t *testing.T) {
-	metrics := &testMetrics{}
-	cache, err := New[string, int]("users", WithMetrics(metrics))
+func TestMetricsNilIsNoop(t *testing.T) {
+	cache, err := New[string, int](WithMetrics(nil))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	cache.Close()
-}
 
-func TestRegisterMetricsNilIsNoop(t *testing.T) {
-	cache := &Cache[string, int]{}
-	if err := cache.registerMetrics(nil); err != nil {
-		t.Fatalf("registerMetrics(nil) error = %v", err)
-	}
-	if cache.metrics != nil {
-		t.Fatal("metrics registration must remain nil")
+	cache.Set("a", 1, NoExpiration)
+
+	value, found := cache.Get("a")
+	if !found || value != 1 {
+		t.Fatalf("Get(a) = %d, %t, want 1, true", value, found)
 	}
 }

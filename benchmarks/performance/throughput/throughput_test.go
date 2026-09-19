@@ -78,7 +78,6 @@ func runThroughputBenchmark(
 	b.Helper()
 
 	cache := newThroughputCache(b, maxEntries, data)
-	b.Cleanup(cache.Close)
 
 	var workers atomic.Uint64
 
@@ -133,7 +132,6 @@ func newThroughputCache(
 
 	for range throughputPopulationAttempts {
 		cache, err := pacecache.New[string, string](
-			"throughput",
 			pacecache.WithMaxEntries(maxEntries),
 			pacecache.WithSegmentCount(throughputSegments),
 		)
@@ -153,7 +151,6 @@ func newThroughputCache(
 			return cache
 		}
 
-		cache.Close()
 	}
 
 	b.Fatalf(

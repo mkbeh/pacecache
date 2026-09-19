@@ -21,7 +21,7 @@ The library provides an intuitive API with predictable behavior under high concu
 * **Generic API:** Type-safe caching with comparable keys and arbitrary value types.
 * **Bounded LRU:** Exact per-segment LRU within a fixed total capacity.
 * **Expiration:** Default and per-entry TTLs, jitter, sliding expiration, refresh, and no-expiration entries.
-* **Cleanup:** Lazy expiration, explicit cleanup, and an optional background worker.
+* **Cleanup:** Lazy expiration, explicit cleanup, and optional background cleanup.
 * **Cache-Aside:** Coalesces concurrent misses for the same key into a single load.
 * **Safe Updates:** Publication barriers prevent stale loads from overwriting newer cache state.
 * **Observability:** Built-in statistics with optional OpenTelemetry metrics.
@@ -42,15 +42,14 @@ go get github.com/mkbeh/pacecache/extra/paceotel
 
 ## Usage
 
-Create a cache with `pacecache.New` and close it when it is no longer needed:
+Create a cache with `pacecache.New`:
 
 <!-- @formatter:off -->
 ```go
-cache, err := pacecache.New[string, string]("cache")
+cache, err := pacecache.New[string, string]()
 if err != nil {
     panic(err)
 }
-defer cache.Close()
 ```
 <!-- @formatter:on -->
 
@@ -64,11 +63,9 @@ deadlines and reduce synchronized expiration bursts. Individual entries can use 
 <!-- @formatter:off -->
 ```go
 cache, _ := pacecache.New[string, string](
-    "cache",
     pacecache.WithTTL(5*time.Minute),
     pacecache.WithJitter(30*time.Second),
 )
-defer cache.Close()
 ```
 <!-- @formatter:on -->
 
@@ -86,6 +83,7 @@ value, found := cache.Get("key1")
 
 // Read a value together with its expiration metadata.
 entry, found := cache.GetEntry("key1")
+fmt.Println(entry.Value(), entry.ExpiresAt())
 
 // Check existence without updating LRU or TTL.
 exists := cache.Exists("key2")
@@ -131,14 +129,12 @@ If the same loader is reused across calls, configure it once with `NewWithDefaul
 <!-- @formatter:off -->
 ```go
 cache, _ := pacecache.NewWithDefaultLoader[string, string](
-    "cache",
     func(ctx context.Context, key string) (string, bool, error) {
         // Fetch data from a database, file, or remote service.
         return "loaded value", true, nil
     },
     pacecache.WithTTL(5*time.Minute),
 )
-defer cache.Close()
 
 // Return the cached value or invoke the configured loader on a miss.
 value, found, err := cache.GetOrLoad(ctx, "key")
@@ -155,22 +151,25 @@ if found {
 Missing results and loader errors are returned without being cached. Concurrent misses for the same key share a single
 loader execution, avoiding duplicate requests to the upstream source.
 
-Expired entries are never returned and are removed lazily when encountered. Periodic background cleanup can be enabled
-for entries that may remain untouched:
+Expired entries are removed lazily when encountered. Background cleanup can be started with `StartCleanup`. Since
+`StartCleanup` blocks until `StopCleanup` is called, it is usually launched in a separate goroutine:
 
 <!-- @formatter:off -->
 ```go
 cache, _ := pacecache.New[string, string](
-    "cache",
     pacecache.WithTTL(5*time.Minute),
-    pacecache.WithCleanupInterval(time.Minute), // background cleanup
 )
-defer cache.Close()
+
+// Start automatic deletion of expired items.
+go cache.StartCleanup()
+
+// Stop automatic deletion of expired items.
+cache.StopCleanup()
 ```
 <!-- @formatter:on -->
 
-Background cleanup is optional. Expired entries can also be reclaimed explicitly with `DeleteExpired`. `Close` stops
-the cleanup worker and waits for it to exit.
+Background cleanup is optional. Expired entries can also be reclaimed explicitly with `DeleteExpired`.
+
 ## Concurrency semantics
 
 The cache coordinates concurrent loads and mutations to prevent duplicate upstream work and stale values from

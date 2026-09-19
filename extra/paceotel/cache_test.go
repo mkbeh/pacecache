@@ -3,6 +3,7 @@ package paceotel
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,77 +13,72 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-type statsProviderStub struct {
-	name  string
-	stats pacecache.Stats
-}
+const (
+	wantScopeName = "github.com/mkbeh/pacecache/extra/paceotel"
 
-func (provider *statsProviderStub) Name() string {
-	if provider == nil {
-		return ""
+	wantEntryCountMetricName                = "pacecache.entry.count"
+	wantEntryLimitMetricName                = "pacecache.entry.limit"
+	wantSegmentCountMetricName              = "pacecache.segment.count"
+	wantLookupCountMetricName               = "pacecache.lookup.count"
+	wantLoadCountMetricName                 = "pacecache.load.count"
+	wantLoadTimeMetricName                  = "pacecache.load.time"
+	wantLoadSharedCountMetricName           = "pacecache.load.shared.count"
+	wantLoadSupersededCountMetricName       = "pacecache.load.superseded.count"
+	wantRemovedCountMetricName              = "pacecache.entry.removed.count"
+	wantCleanupCountMetricName              = "pacecache.cleanup.count"
+	wantCleanupWorkerRunCountMetricName     = "pacecache.cleanup.worker.run.count"
+	wantCleanupWorkerPendingCountMetricName = "pacecache.cleanup.worker.pending.count"
+	wantCleanupWorkerTimeMetricName         = "pacecache.cleanup.worker.time"
+	wantEvictionCountMetricName             = "pacecache.entry.eviction.count"
+	wantExpirationCountMetricName           = "pacecache.entry.expiration.count"
+
+	wantCacheNameAttribute        = "pacecache.name"
+	wantLookupResultAttribute     = "pacecache.lookup.result"
+	wantLoadResultAttribute       = "pacecache.load.result"
+	wantRemovalOperationAttribute = "pacecache.removal.operation"
+)
+
+func TestMetricsSchema(t *testing.T) {
+	metrics, reader := newTestMetrics(t)
+
+	if err := metrics.Register(&metricsSourceStub{name: "users"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
 	}
 
-	return provider.name
-}
+	collected := collectMetricsByName(t, collectTestMetrics(t, reader))
 
-func (provider *statsProviderStub) Stats() pacecache.Stats {
-	if provider == nil {
-		return pacecache.Stats{}
+	expected := map[string]string{
+		wantEntryCountMetricName:                "{entry}",
+		wantEntryLimitMetricName:                "{entry}",
+		wantSegmentCountMetricName:              "{segment}",
+		wantLookupCountMetricName:               "{lookup}",
+		wantLoadCountMetricName:                 "{load}",
+		wantLoadTimeMetricName:                  "s",
+		wantLoadSharedCountMetricName:           "{request}",
+		wantLoadSupersededCountMetricName:       "{load}",
+		wantRemovedCountMetricName:              "{entry}",
+		wantCleanupCountMetricName:              "{cleanup}",
+		wantCleanupWorkerRunCountMetricName:     "{run}",
+		wantCleanupWorkerPendingCountMetricName: "{run}",
+		wantCleanupWorkerTimeMetricName:         "s",
+		wantEvictionCountMetricName:             "{entry}",
+		wantExpirationCountMetricName:           "{entry}",
 	}
 
-	return provider.stats
+	if len(collected) != len(expected) {
+		t.Fatalf("collected metrics = %d, want %d", len(collected), len(expected))
+	}
+
+	for name, unit := range expected {
+		current := requireMetric(t, collected, name)
+		if current.Unit != unit {
+			t.Fatalf("metric %q unit = %q, want %q", name, current.Unit, unit)
+		}
+	}
 }
 
-func TestRegisterCacheValidation(t *testing.T) {
-	provider := &statsProviderStub{name: "users"}
-
-	t.Run("nil metrics", func(t *testing.T) {
-		var metrics *Metrics
-
-		registration, err := metrics.RegisterCache(provider)
-		if registration != nil {
-			t.Fatalf("RegisterCache() registration = %v, want nil", registration)
-		}
-		if err == nil || err.Error() != "paceotel: metrics is nil" {
-			t.Fatalf("RegisterCache() error = %v, want metrics is nil", err)
-		}
-	})
-
-	t.Run("nil cache", func(t *testing.T) {
-		metrics := New()
-
-		registration, err := metrics.RegisterCache(nil)
-		if registration != nil {
-			t.Fatalf("RegisterCache() registration = %v, want nil", registration)
-		}
-		if err == nil || err.Error() != "paceotel: cache is nil" {
-			t.Fatalf("RegisterCache() error = %v, want cache is nil", err)
-		}
-	})
-
-	t.Run("blank cache name", func(t *testing.T) {
-		metrics := New()
-
-		registration, err := metrics.RegisterCache(&statsProviderStub{})
-		if registration != nil {
-			t.Fatalf("RegisterCache() registration = %v, want nil", registration)
-		}
-		if err == nil || err.Error() != "paceotel: cache name is empty" {
-			t.Fatalf("RegisterCache() error = %v, want cache name is empty", err)
-		}
-	})
-}
-
-func TestRegisterCacheCollectsMetrics(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	meterProvider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(reader),
-	)
-	t.Cleanup(func() {
-		if err := meterProvider.Shutdown(context.Background()); err != nil {
-			t.Fatalf("Shutdown() error = %v", err)
-		}
-	})
+func TestMetricsCollectsSource(t *testing.T) {
+	metrics, reader := newTestMetrics(t)
 
 	stats := pacecache.Stats{
 		EntryCount:   3,
@@ -111,202 +107,324 @@ func TestRegisterCacheCollectsMetrics(t *testing.T) {
 		ExpirationCount: 14,
 	}
 
-	metrics := New(
-		WithMeterProvider(meterProvider),
-	)
+	var statsCalls atomic.Int64
 
-	registration, err := metrics.RegisterCache(
-		&statsProviderStub{
-			name:  "users",
-			stats: stats,
+	if err := metrics.Register(
+		&metricsSourceStub{
+			name: "users",
+			statsFn: func() pacecache.Stats {
+				statsCalls.Add(1)
+
+				return stats
+			},
 		},
-	)
-	if err != nil {
-		t.Fatalf("RegisterCache() error = %v", err)
-	}
-	if registration == nil {
-		t.Fatal("RegisterCache() registration = nil")
-	}
-	t.Cleanup(registration.Close)
-
-	var resourceMetrics metricdata.ResourceMetrics
-	if err := reader.Collect(
-		context.Background(),
-		&resourceMetrics,
 	); err != nil {
-		t.Fatalf("Collect() error = %v", err)
+		t.Fatalf("Register() error = %v", err)
 	}
 
-	collected := collectMetricsByName(t, resourceMetrics)
+	collected := collectMetricsByName(t, collectTestMetrics(t, reader))
 
-	requireInt64MetricPoint(
+	if got := statsCalls.Load(); got != 1 {
+		t.Fatalf("Stats() calls = %d, want 1", got)
+	}
+
+	requireInt64GaugePoint(
 		t,
 		collected,
-		entryCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantEntryCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		3,
 	)
-	requireInt64MetricPoint(
+	requireInt64GaugePoint(
 		t,
 		collected,
-		entryLimitMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantEntryLimitMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		128,
 	)
-	requireInt64MetricPoint(
+	requireInt64GaugePoint(
 		t,
 		collected,
-		segmentCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantSegmentCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		4,
 	)
 
-	requireInt64MetricPoint(
+	lookupPoints := int64CounterPoints(
+		t,
+		requireMetric(t, collected, wantLookupCountMetricName),
+	)
+	if len(lookupPoints) != 2 {
+		t.Fatalf("lookup count points = %d, want 2", len(lookupPoints))
+	}
+	requireInt64CounterPoint(
 		t,
 		collected,
-		lookupCountMetricName,
+		wantLookupCountMetricName,
 		map[string]string{
-			cacheNameAttribute:    "users",
-			lookupResultAttribute: lookupResultHit,
+			wantCacheNameAttribute:    "users",
+			wantLookupResultAttribute: "hit",
 		},
 		11,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		lookupCountMetricName,
+		wantLookupCountMetricName,
 		map[string]string{
-			cacheNameAttribute:    "users",
-			lookupResultAttribute: lookupResultMiss,
+			wantCacheNameAttribute:    "users",
+			wantLookupResultAttribute: "miss",
 		},
 		7,
 	)
-	requireNoInt64MetricPoint(
-		t,
-		collected,
-		lookupCountMetricName,
-		map[string]string{
-			cacheNameAttribute:    "users",
-			lookupResultAttribute: "negative_hit",
-		},
-	)
 
-	requireInt64MetricPoint(
+	loadPoints := int64CounterPoints(
+		t,
+		requireMetric(t, collected, wantLoadCountMetricName),
+	)
+	if len(loadPoints) != 3 {
+		t.Fatalf("load count points = %d, want 3", len(loadPoints))
+	}
+	requireInt64CounterPoint(
 		t,
 		collected,
-		loadCountMetricName,
+		wantLoadCountMetricName,
 		map[string]string{
-			cacheNameAttribute:  "users",
-			loadResultAttribute: loadResultFound,
+			wantCacheNameAttribute:  "users",
+			wantLoadResultAttribute: "found",
 		},
 		5,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		loadCountMetricName,
+		wantLoadCountMetricName,
 		map[string]string{
-			cacheNameAttribute:  "users",
-			loadResultAttribute: loadResultNotFound,
+			wantCacheNameAttribute:  "users",
+			wantLoadResultAttribute: "not_found",
 		},
 		3,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		loadCountMetricName,
+		wantLoadCountMetricName,
 		map[string]string{
-			cacheNameAttribute:  "users",
-			loadResultAttribute: loadResultError,
+			wantCacheNameAttribute:  "users",
+			wantLoadResultAttribute: "error",
 		},
 		2,
 	)
 
-	requireFloat64MetricPoint(
+	requireFloat64CounterPoint(
 		t,
 		collected,
-		loadTimeMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantLoadTimeMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		1.5,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		loadSharedCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantLoadSharedCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		4,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		loadSupersededCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantLoadSupersededCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		1,
 	)
 
-	requireInt64MetricPoint(
+	removedPoints := int64CounterPoints(
+		t,
+		requireMetric(t, collected, wantRemovedCountMetricName),
+	)
+	if len(removedPoints) != 2 {
+		t.Fatalf("removed count points = %d, want 2", len(removedPoints))
+	}
+	requireInt64CounterPoint(
 		t,
 		collected,
-		removedCountMetricName,
+		wantRemovedCountMetricName,
 		map[string]string{
-			cacheNameAttribute:        "users",
-			removalOperationAttribute: removalOperationDelete,
+			wantCacheNameAttribute:        "users",
+			wantRemovalOperationAttribute: "delete",
 		},
 		8,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		removedCountMetricName,
+		wantRemovedCountMetricName,
 		map[string]string{
-			cacheNameAttribute:        "users",
-			removalOperationAttribute: removalOperationClear,
+			wantCacheNameAttribute:        "users",
+			wantRemovalOperationAttribute: "clear",
 		},
 		9,
 	)
 
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		cleanupCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantCleanupCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		10,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		cleanupWorkerRunCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantCleanupWorkerRunCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		11,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		cleanupWorkerPendingCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantCleanupWorkerPendingCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		12,
 	)
-	requireFloat64MetricPoint(
+	requireFloat64CounterPoint(
 		t,
 		collected,
-		cleanupWorkerTimeMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantCleanupWorkerTimeMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		2.5,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		evictionCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantEvictionCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		13,
 	)
-	requireInt64MetricPoint(
+	requireInt64CounterPoint(
 		t,
 		collected,
-		expirationCountMetricName,
-		map[string]string{cacheNameAttribute: "users"},
+		wantExpirationCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
 		14,
 	)
+}
+
+func TestMetricsCollectsMultipleSources(t *testing.T) {
+	metrics, reader := newTestMetrics(t)
+
+	if err := metrics.Register(
+		&metricsSourceStub{
+			name: "users",
+			stats: pacecache.Stats{
+				EntryCount: 3,
+				MaxEntries: 128,
+				HitCount:   11,
+			},
+		},
+	); err != nil {
+		t.Fatalf("Register(users) error = %v", err)
+	}
+
+	if err := metrics.Register(
+		&metricsSourceStub{
+			name: "sessions",
+			stats: pacecache.Stats{
+				EntryCount: 7,
+				MaxEntries: 64,
+				MissCount:  5,
+			},
+		},
+	); err != nil {
+		t.Fatalf("Register(sessions) error = %v", err)
+	}
+
+	collected := collectMetricsByName(t, collectTestMetrics(t, reader))
+
+	entryPoints := int64GaugePoints(
+		t,
+		requireMetric(t, collected, wantEntryCountMetricName),
+	)
+	if len(entryPoints) != 2 {
+		t.Fatalf("entry count points = %d, want 2", len(entryPoints))
+	}
+
+	requireInt64GaugePoint(
+		t,
+		collected,
+		wantEntryCountMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
+		3,
+	)
+	requireInt64GaugePoint(
+		t,
+		collected,
+		wantEntryCountMetricName,
+		map[string]string{wantCacheNameAttribute: "sessions"},
+		7,
+	)
+	requireInt64GaugePoint(
+		t,
+		collected,
+		wantEntryLimitMetricName,
+		map[string]string{wantCacheNameAttribute: "users"},
+		128,
+	)
+	requireInt64GaugePoint(
+		t,
+		collected,
+		wantEntryLimitMetricName,
+		map[string]string{wantCacheNameAttribute: "sessions"},
+		64,
+	)
+	requireInt64CounterPoint(
+		t,
+		collected,
+		wantLookupCountMetricName,
+		map[string]string{
+			wantCacheNameAttribute:    "users",
+			wantLookupResultAttribute: "hit",
+		},
+		11,
+	)
+	requireInt64CounterPoint(
+		t,
+		collected,
+		wantLookupCountMetricName,
+		map[string]string{
+			wantCacheNameAttribute:    "sessions",
+			wantLookupResultAttribute: "miss",
+		},
+		5,
+	)
+}
+
+func TestMetricsCollectsUnnamedSource(t *testing.T) {
+	metrics, reader := newTestMetrics(t)
+
+	if err := metrics.Register(
+		&metricsSourceStub{
+			stats: pacecache.Stats{EntryCount: 3},
+		},
+	); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	collected := collectMetricsByName(t, collectTestMetrics(t, reader))
+	points := int64GaugePoints(
+		t,
+		requireMetric(t, collected, wantEntryCountMetricName),
+	)
+
+	if len(points) != 1 {
+		t.Fatalf("entry count points = %d, want 1", len(points))
+	}
+	if points[0].Value != 3 {
+		t.Fatalf("entry count = %d, want 3", points[0].Value)
+	}
+	if got := points[0].Attributes.Len(); got != 0 {
+		t.Fatalf("unnamed source attributes = %d, want 0", got)
+	}
 }
 
 func TestNewMetricError(t *testing.T) {
@@ -323,6 +441,20 @@ func TestNewMetricError(t *testing.T) {
 	}
 }
 
+func collectTestMetrics(
+	t *testing.T,
+	reader *sdkmetric.ManualReader,
+) metricdata.ResourceMetrics {
+	t.Helper()
+
+	var resourceMetrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &resourceMetrics); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	return resourceMetrics
+}
+
 func collectMetricsByName(
 	t *testing.T,
 	resourceMetrics metricdata.ResourceMetrics,
@@ -330,53 +462,50 @@ func collectMetricsByName(
 	t.Helper()
 
 	collected := make(map[string]metricdata.Metrics)
+	foundScope := false
 
-	var foundScope bool
 	for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
-		if scopeMetrics.Scope.Name != instrumentationName {
+		if scopeMetrics.Scope.Name != wantScopeName {
 			continue
 		}
 
+		if foundScope {
+			t.Fatalf("instrumentation scope %q collected more than once", wantScopeName)
+		}
 		foundScope = true
+
 		for _, current := range scopeMetrics.Metrics {
+			if _, exists := collected[current.Name]; exists {
+				t.Fatalf("metric %q collected more than once", current.Name)
+			}
+
 			collected[current.Name] = current
 		}
 	}
 
 	if !foundScope {
-		t.Fatalf(
-			"instrumentation scope %q not found",
-			instrumentationName,
-		)
-	}
-
-	expected := []string{
-		entryCountMetricName,
-		entryLimitMetricName,
-		segmentCountMetricName,
-		lookupCountMetricName,
-		loadCountMetricName,
-		loadTimeMetricName,
-		loadSharedCountMetricName,
-		loadSupersededCountMetricName,
-		removedCountMetricName,
-		cleanupCountMetricName,
-		cleanupWorkerRunCountMetricName,
-		cleanupWorkerPendingCountMetricName,
-		cleanupWorkerTimeMetricName,
-		evictionCountMetricName,
-		expirationCountMetricName,
-	}
-	for _, name := range expected {
-		if _, ok := collected[name]; !ok {
-			t.Fatalf("metric %q not collected", name)
-		}
+		t.Fatalf("instrumentation scope %q not found", wantScopeName)
 	}
 
 	return collected
 }
 
-func requireInt64MetricPoint(
+func requireMetric(
+	t *testing.T,
+	collected map[string]metricdata.Metrics,
+	name string,
+) metricdata.Metrics {
+	t.Helper()
+
+	current, ok := collected[name]
+	if !ok {
+		t.Fatalf("metric %q not collected", name)
+	}
+
+	return current
+}
+
+func requireInt64GaugePoint(
 	t *testing.T,
 	collected map[string]metricdata.Metrics,
 	name string,
@@ -385,53 +514,24 @@ func requireInt64MetricPoint(
 ) {
 	t.Helper()
 
-	points := int64MetricPoints(t, collected[name])
-	for _, point := range points {
-		if !metricAttributesMatch(point.Attributes, attributes) {
-			continue
-		}
-
-		if point.Value != want {
-			t.Fatalf(
-				"metric %q value = %d, want %d; attributes=%v",
-				name,
-				point.Value,
-				want,
-				attributes,
-			)
-		}
-
-		return
-	}
-
-	t.Fatalf(
-		"metric %q point with attributes %v not found",
-		name,
-		attributes,
-	)
+	points := int64GaugePoints(t, requireMetric(t, collected, name))
+	requireInt64Point(t, name, points, attributes, want)
 }
 
-func requireNoInt64MetricPoint(
+func requireInt64CounterPoint(
 	t *testing.T,
 	collected map[string]metricdata.Metrics,
 	name string,
 	attributes map[string]string,
+	want int64,
 ) {
 	t.Helper()
 
-	points := int64MetricPoints(t, collected[name])
-	for _, point := range points {
-		if metricAttributesMatch(point.Attributes, attributes) {
-			t.Fatalf(
-				"metric %q unexpectedly contains attributes %v",
-				name,
-				attributes,
-			)
-		}
-	}
+	points := int64CounterPoints(t, requireMetric(t, collected, name))
+	requireInt64Point(t, name, points, attributes, want)
 }
 
-func requireFloat64MetricPoint(
+func requireFloat64CounterPoint(
 	t *testing.T,
 	collected map[string]metricdata.Metrics,
 	name string,
@@ -440,7 +540,7 @@ func requireFloat64MetricPoint(
 ) {
 	t.Helper()
 
-	points := float64MetricPoints(t, collected[name])
+	points := float64CounterPoints(t, requireMetric(t, collected, name))
 	for _, point := range points {
 		if !metricAttributesMatch(point.Attributes, attributes) {
 			continue
@@ -466,52 +566,121 @@ func requireFloat64MetricPoint(
 	)
 }
 
-func int64MetricPoints(
+func requireInt64Point(
+	t *testing.T,
+	name string,
+	points []metricdata.DataPoint[int64],
+	attributes map[string]string,
+	want int64,
+) {
+	t.Helper()
+
+	for _, point := range points {
+		if !metricAttributesMatch(point.Attributes, attributes) {
+			continue
+		}
+
+		if point.Value != want {
+			t.Fatalf(
+				"metric %q value = %d, want %d; attributes=%v",
+				name,
+				point.Value,
+				want,
+				attributes,
+			)
+		}
+
+		return
+	}
+
+	t.Fatalf(
+		"metric %q point with attributes %v not found",
+		name,
+		attributes,
+	)
+}
+
+func int64GaugePoints(
 	t *testing.T,
 	current metricdata.Metrics,
 ) []metricdata.DataPoint[int64] {
 	t.Helper()
 
-	switch data := current.Data.(type) {
-	case metricdata.Gauge[int64]:
-		return data.DataPoints
-	case metricdata.Sum[int64]:
-		return data.DataPoints
-	default:
+	data, ok := current.Data.(metricdata.Gauge[int64])
+	if !ok {
 		t.Fatalf(
-			"metric %q data type = %T, want int64 gauge or sum",
+			"metric %q data type = %T, want int64 gauge",
 			current.Name,
 			current.Data,
 		)
-		return nil
 	}
+
+	return data.DataPoints
 }
 
-func float64MetricPoints(
+func int64CounterPoints(
+	t *testing.T,
+	current metricdata.Metrics,
+) []metricdata.DataPoint[int64] {
+	t.Helper()
+
+	data, ok := current.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf(
+			"metric %q data type = %T, want int64 sum",
+			current.Name,
+			current.Data,
+		)
+	}
+	if !data.IsMonotonic {
+		t.Fatalf("metric %q is not monotonic", current.Name)
+	}
+
+	return data.DataPoints
+}
+
+func float64CounterPoints(
 	t *testing.T,
 	current metricdata.Metrics,
 ) []metricdata.DataPoint[float64] {
 	t.Helper()
 
-	switch data := current.Data.(type) {
-	case metricdata.Gauge[float64]:
-		return data.DataPoints
-	case metricdata.Sum[float64]:
-		return data.DataPoints
-	default:
+	data, ok := current.Data.(metricdata.Sum[float64])
+	if !ok {
 		t.Fatalf(
-			"metric %q data type = %T, want float64 gauge or sum",
+			"metric %q data type = %T, want float64 sum",
 			current.Name,
 			current.Data,
 		)
-		return nil
 	}
+	if !data.IsMonotonic {
+		t.Fatalf("metric %q is not monotonic", current.Name)
+	}
+
+	return data.DataPoints
+}
+
+func hasMetricAttributes(
+	points []metricdata.DataPoint[int64],
+	want map[string]string,
+) bool {
+	for _, point := range points {
+		if metricAttributesMatch(point.Attributes, want) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func metricAttributesMatch(
 	set attribute.Set,
 	want map[string]string,
 ) bool {
+	if set.Len() != len(want) {
+		return false
+	}
+
 	for key, value := range want {
 		current, ok := set.Value(attribute.Key(key))
 		if !ok || current.AsString() != value {

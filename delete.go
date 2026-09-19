@@ -196,7 +196,7 @@ func (cache *Cache[K, V]) Clear() {
 // index and returns the number of entries removed.
 //
 // DeleteExpired is always available; background cleanup does not need to be
-// enabled. Logical expiration is independent of physical cleanup: an expired
+// running. Logical expiration is independent of physical cleanup: an expired
 // entry is never returned even if it has not yet been reclaimed. Nearby
 // expiration deadlines are grouped internally. Bucket eligibility may trail
 // the exact TTL deadline by up to the internal bucket resolution; actual

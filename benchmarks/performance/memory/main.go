@@ -38,7 +38,6 @@ func main() {
 	runtime.ReadMemStats(&before)
 
 	cache, err := pacecache.New[string, string](
-		"memory",
 		pacecache.WithMaxEntries(*capacity),
 		pacecache.WithSegmentCount(segmentCount),
 		pacecache.WithTTL(expiration),
@@ -46,7 +45,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("create cache: %v", err)
 	}
-	defer cache.Close()
 
 	for index := range *capacity {
 		key := keys[index]

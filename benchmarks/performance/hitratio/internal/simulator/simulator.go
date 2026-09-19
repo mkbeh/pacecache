@@ -61,7 +61,6 @@ func (s Simulator) simulateCapacity(capacity int) (result, error) {
 	if err != nil {
 		return result{}, fmt.Errorf("create policy for capacity %d: %w", capacity, err)
 	}
-	defer p.Close()
 
 	generator := trace.NewZipf(
 		s.cfg.Zipf.S,

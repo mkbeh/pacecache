@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## v1.3.0
+
+This release simplifies cache construction, makes background cleanup lifecycle explicit, and streamlines metrics
+integration.
+
+### Added
+
+* **Cache Naming:** Added `WithName` for assigning an optional cache name used by observability integrations.
+* **Cleanup Lifecycle:** Added `StartCleanup` and `StopCleanup` for explicitly controlling periodic expiration cleanup.
+* **Metrics Sources:** Added `MetricsSource` for exposing cache statistics to metrics integrations.
+
+### Changed
+
+* **Constructors:** `New` no longer accepts a cache name. `NewWithDefaultLoader` now accepts the loader directly,
+  followed by options.
+* **Metrics API:** Replaced `StatsProvider` and `MetricsRegistration` with `Metrics.Register(MetricsSource) error`.
+* **Background Cleanup:** Cleanup is no longer started automatically during cache construction. `WithCleanupInterval`
+  configures the cleanup interval, while `StartCleanup` runs the blocking cleanup loop explicitly.
+* **Cleanup Defaults:** Background cleanup uses a one-minute interval by default.
+* **Benchmarks:** Updated benchmark suites and comparisons for the current cache API.
+
+### Removed
+
+* **Cache Close:** Removed `Cache.Close`; background cleanup is stopped explicitly with `StopCleanup`.
+
+## extra/paceotel/v1.3.0
+
+This release aligns `paceotel` with the updated `pacecache` metrics API and simplifies metrics registration across
+multiple caches.
+
+### Added
+
+* **Reusable Metrics:** A single `Metrics` instance can be shared across multiple caches.
+* **Source Validation:** Duplicate cache names are rejected within a `Metrics` instance, while a single unnamed cache is
+  supported.
+
+### Changed
+
+* **Metrics Registration:** Each cache now uses its own OpenTelemetry callback registration.
+* **Unregister Lifecycle:** `Metrics.Unregister` removes all registered callbacks, releases references to registered
+  caches, and prevents further registrations.
+* **Core Dependency:** Updated `github.com/mkbeh/pacecache` to v1.3.0.
+
 ## v1.2.1
 
 This release streamlines cache removal and makes cache-aside loading configurable through default and per-call loaders.

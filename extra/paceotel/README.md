@@ -14,6 +14,7 @@ go get github.com/mkbeh/pacecache/extra/paceotel
 ## Usage
 
 <!-- @formatter:off -->
+
 ```go
 import (
     "context"
@@ -30,14 +31,15 @@ defer provider.Shutdown(context.Background())
 metrics := paceotel.New(
     paceotel.WithMeterProvider(provider),
 )
+defer metrics.Unregister()
 
 // Attach metrics when creating the cache.
 cache, _ := pacecache.New[string, string](
-    "users",
+    pacecache.WithName("users"),
     pacecache.WithMetrics(metrics),
 )
-defer cache.Close()
 ```
+
 <!-- @formatter:on -->
 
 For a complete runnable setup using the stdout exporter, see the [example](../../examples/otel).

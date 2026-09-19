@@ -14,9 +14,9 @@ const (
 )
 
 // Option configures a Cache created by New or NewWithDefaultLoader.
-type Option func(*cacheSettings) error
+type Option func(*settings) error
 
-type cacheSettings struct {
+type settings struct {
 	name string
 
 	maxEntries   int
@@ -33,9 +33,8 @@ type cacheSettings struct {
 	metrics Metrics
 }
 
-func newCacheSettings(name string, options ...Option) (*cacheSettings, error) {
-	settings := defaultCacheSettings()
-	settings.name = name
+func newSettings(options ...Option) (*settings, error) {
+	settings := defaultSettings()
 
 	for index, option := range options {
 		if option == nil {
@@ -54,13 +53,26 @@ func newCacheSettings(name string, options ...Option) (*cacheSettings, error) {
 	return settings, nil
 }
 
-func defaultCacheSettings() *cacheSettings {
-	return &cacheSettings{
+func defaultSettings() *settings {
+	return &settings{
 		maxEntries:         defaultMaxEntries,
 		segmentCount:       defaultStorageSegmentCount,
 		ttl:                defaultTTL,
+		cleanupInterval:    defaultCleanupInterval,
 		cleanupBatchSize:   defaultCleanupBatchSize,
 		cleanupEntryBudget: defaultCleanupEntryBudget,
+	}
+}
+
+// WithName configures an optional logical cache name.
+//
+// Metrics implementations may use the name to distinguish cache instances.
+// An empty name leaves the cache unnamed.
+func WithName(name string) Option {
+	return func(settings *settings) error {
+		settings.name = name
+
+		return nil
 	}
 }
 
@@ -71,7 +83,7 @@ func defaultCacheSettings() *cacheSettings {
 // capacity utilization may be slightly lower because each segment enforces its
 // own local budget.
 func WithMaxEntries(maxEntries int) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if maxEntries <= 0 {
 			return errors.New("max entries must be positive")
 		}
@@ -89,7 +101,7 @@ func WithMaxEntries(maxEntries int) Option {
 // segment has its own entry budget. Benchmark segment counts against the
 // application's actual workload.
 func WithSegmentCount(count int) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if count <= 0 {
 			return errors.New("segment count must be positive")
 		}
@@ -105,7 +117,7 @@ func WithSegmentCount(count int) Option {
 // A positive TTL enables time-based expiration. NoExpiration disables
 // time-based expiration for entries using the default expiration.
 func WithTTL(ttl time.Duration) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if ttl <= 0 && ttl != NoExpiration {
 			return errors.New("ttl must be positive or NoExpiration")
 		}
@@ -123,7 +135,7 @@ func WithTTL(ttl time.Duration) Option {
 // expiration, the resulting effective TTL is reused on every refresh instead of
 // selecting another jitter value. Zero disables jitter.
 func WithJitter(jitter time.Duration) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if jitter < 0 {
 			return errors.New("jitter must not be negative")
 		}
@@ -143,28 +155,23 @@ func WithJitter(jitter time.Duration) Option {
 // jitter is selected once when the entry is stored and reused by subsequent
 // refreshes. Entries using NoExpiration are not refreshed.
 func WithSlidingExpiration() Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		settings.slidingExpiration = true
 
 		return nil
 	}
 }
 
-// WithCleanupInterval enables periodic background physical removal of expired
-// entries.
+// WithCleanupInterval configures the interval between regular cleanup wakeups.
 //
-// The interval controls regular background cleanup wakeups. While expired
-// backlog remains, the cleaner may schedule bounded continuation work sooner.
-// The interval does not affect logical TTL precision or the internal
-// expiration bucket resolution.
+// The default is one minute. While expired backlog remains, the cleaner may
+// schedule bounded continuation work sooner. The interval does not affect
+// logical TTL precision or the internal expiration bucket resolution.
 //
-// Background cleanup is disabled by default. This is the only cleanup option
-// that starts a background worker; cleanup batch size and entry budget only
-// configure cleanup behavior. Manual cleanup through Cache.DeleteExpired is
-// always available without this option. When background cleanup is enabled,
-// Close must be called to stop the cleaner goroutine.
+// Background cleanup must be started explicitly with StartCleanup. Manual
+// cleanup through Cache.DeleteExpired is always available.
 func WithCleanupInterval(interval time.Duration) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if interval <= 0 {
 			return errors.New("cleanup interval must be positive")
 		}
@@ -183,7 +190,7 @@ func WithCleanupInterval(interval time.Duration) Option {
 // Values larger than a segment or the remaining cleanup budget are safe and
 // are naturally limited by the available work. The default is 256.
 func WithCleanupBatchSize(size int) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if size <= 0 {
 			return errors.New("cleanup batch size must be positive")
 		}
@@ -204,7 +211,7 @@ func WithCleanupBatchSize(size int) Option {
 // all entries due at the start of the call are drained. Values larger than the
 // cache size are safe. The default is 16384.
 func WithCleanupEntryBudget(entries int) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		if entries <= 0 {
 			return errors.New("cleanup entry budget must be positive")
 		}
@@ -217,21 +224,17 @@ func WithCleanupEntryBudget(entries int) Option {
 
 // WithMetrics configures optional cache metrics.
 //
-// The Metrics implementation may be reused by multiple caches. Its
-// registration is released when Cache.Close is called.
+// The Metrics implementation may be reused by multiple caches. The cache
+// does not manage the lifecycle of metrics registrations.
 func WithMetrics(metrics Metrics) Option {
-	return func(settings *cacheSettings) error {
+	return func(settings *settings) error {
 		settings.metrics = metrics
 
 		return nil
 	}
 }
 
-func (settings *cacheSettings) validate() error {
-	if settings.name == "" {
-		return errors.New("cache name must not be empty")
-	}
-
+func (settings *settings) validate() error {
 	if settings.ttl > 0 && settings.ttl > maxDuration-settings.jitter {
 		return errors.New("ttl plus jitter exceeds maximum duration")
 	}

@@ -51,6 +51,11 @@ func run(ctx context.Context) error {
 	metrics := paceotel.New(
 		paceotel.WithMeterProvider(meterProvider),
 	)
+	defer func() {
+		if err := metrics.Unregister(); err != nil {
+			log.Printf("unregister cache metrics: %v", err)
+		}
+	}()
 
 	repository := &userRepository{
 		users: map[int64]user{
@@ -62,8 +67,8 @@ func run(ctx context.Context) error {
 	}
 
 	users, err := pacecache.NewWithDefaultLoader[int64, user](
-		"users",
 		repository.find,
+		pacecache.WithName("users"),
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(time.Minute),
 		pacecache.WithMetrics(metrics),
@@ -71,7 +76,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create users cache: %w", err)
 	}
-	defer users.Close()
 
 	// 3. Generate representative cache activity.
 	lookups := []struct {

@@ -11,7 +11,6 @@ func TestStatsSnapshotAggregatesSegments(t *testing.T) {
 	store := newStorageWithExpirationResolution[string, int](4, 2, time.Nanosecond)
 	collector := newStatsCollector(2)
 	cache := &Cache[string, int]{
-		name:   "users",
 		store:  store,
 		states: make([]cacheState[string, int], 2),
 		stats:  collector,
@@ -46,24 +45,34 @@ func TestStatsSnapshotAggregatesSegments(t *testing.T) {
 	collector.cleanupWorkerPendingCount.Store(16)
 	collector.cleanupWorkerDurationNanos.Store(17)
 
-	got := cache.Stats()
-	if got.EntryCount != 2 || got.MaxEntries != 4 || got.SegmentCount != 2 {
-		t.Fatalf("state stats = %+v", got)
+	want := Stats{
+		EntryCount:   2,
+		MaxEntries:   4,
+		SegmentCount: 2,
+
+		HitCount:        3,
+		MissCount:       7,
+		EvictionCount:   9,
+		ExpirationCount: 11,
+
+		LoadFoundCount:      13,
+		LoadNotFoundCount:   15,
+		LoadErrorCount:      17,
+		LoadSupersededCount: 19,
+		LoadDuration:        2_100 * time.Nanosecond,
+		SharedCount:         23,
+
+		DeletedEntryCount: 25,
+		ClearedEntryCount: 13,
+
+		CleanupCount:              14,
+		CleanupWorkerRunCount:     15,
+		CleanupWorkerPendingCount: 16,
+		CleanupWorkerDuration:     17 * time.Nanosecond,
 	}
-	if got.HitCount != 3 || got.MissCount != 7 || got.EvictionCount != 9 || got.ExpirationCount != 11 {
-		t.Fatalf("storage counters = %+v", got)
-	}
-	if got.LoadFoundCount != 13 || got.LoadNotFoundCount != 15 || got.LoadErrorCount != 17 || got.LoadSupersededCount != 19 {
-		t.Fatalf("load counters = %+v", got)
-	}
-	if got.LoadDuration != 2_100*time.Nanosecond {
-		t.Fatalf("LoadDuration = %v, want 2100ns", got.LoadDuration)
-	}
-	if got.SharedCount != 23 || got.DeletedEntryCount != 25 || got.ClearedEntryCount != 13 {
-		t.Fatalf("atomic counters = %+v", got)
-	}
-	if got.CleanupCount != 14 || got.CleanupWorkerRunCount != 15 || got.CleanupWorkerPendingCount != 16 || got.CleanupWorkerDuration != 17*time.Nanosecond {
-		t.Fatalf("cleanup counters = %+v", got)
+
+	if got := cache.Stats(); got != want {
+		t.Fatalf("Stats() = %+v, want %+v", got, want)
 	}
 }
 
@@ -130,7 +139,7 @@ func TestStatsRecordHelpers(t *testing.T) {
 }
 
 func TestStatsConcurrentWithCacheOperations(t *testing.T) {
-	cache := mustNewCache[int](t, "users", WithMaxEntries(128), WithSegmentCount(8))
+	cache := mustNewCache[int](t, WithMaxEntries(128), WithSegmentCount(8))
 
 	var group sync.WaitGroup
 	for worker := range 8 {
