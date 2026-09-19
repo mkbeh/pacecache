@@ -30,12 +30,14 @@ type Cache[K comparable, V any] struct {
 	states []cacheState[K, V]
 	stats  *statsCollector
 
-	cleanupPolicy cleanupPolicy
-	cleanup       *cleanupWorker[K, V]
-	closeOnce     sync.Once
-
 	ttl    time.Duration
 	jitter time.Duration
+
+	cleanupPolicy   cleanupPolicy
+	cleanupInterval time.Duration
+
+	cleanupMu sync.Mutex
+	cleanup   *cleanupWorker[K, V]
 }
 
 // New creates a Cache.
@@ -82,11 +84,6 @@ func newCache[K comparable, V any](
 		settings.slidingExpiration,
 	)
 
-	policy := cleanupPolicy{
-		batchSize:   settings.cleanupBatchSize,
-		entryBudget: settings.cleanupEntryBudget,
-	}
-
 	cache := &Cache[K, V]{
 		loader: loader,
 
@@ -94,43 +91,68 @@ func newCache[K comparable, V any](
 		states: make([]cacheState[K, V], len(store.segments)),
 		stats:  newStatsCollector(len(store.segments)),
 
-		cleanupPolicy: policy,
-
 		ttl:    settings.ttl,
 		jitter: settings.jitter,
+
+		cleanupPolicy: cleanupPolicy{
+			batchSize:   settings.cleanupBatchSize,
+			entryBudget: settings.cleanupEntryBudget,
+		},
+		cleanupInterval: settings.cleanupInterval,
 	}
 
 	if err := cache.registerMetrics(settings.name, settings.metrics); err != nil {
 		return nil, fmt.Errorf("pacecache: register metrics: %w", err)
 	}
 
-	if settings.cleanupInterval > 0 {
-		cache.cleanup = newCleanupWorker(
-			cache.store,
-			cache.stats,
-			cache.cleanupPolicy,
-			settings.cleanupInterval,
-		)
-		cache.cleanup.start()
-	}
-
 	return cache, nil
 }
 
-// Close stops background cleanup and waits for the worker to exit.
-//
-// Close does not clear or disable the cache. Repeated calls are safe. Close is
-// a no-op on a nil Cache.
-func (cache *Cache[K, V]) Close() {
+// StartCleanup runs periodic background expiration cleanup until StopCleanup is
+// called. StartCleanup blocks for the lifetime of the cleanup loop; callers that
+// want background cleanup should start it in a goroutine. If cleanup is already
+// running, StartCleanup returns immediately.
+func (cache *Cache[K, V]) StartCleanup() {
+	if !cache.initialized() {
+		return
+	}
+
+	cache.cleanupMu.Lock()
+	if cache.cleanup != nil {
+		cache.cleanupMu.Unlock()
+		return
+	}
+
+	worker := newCleanupWorker(
+		cache.store,
+		cache.stats,
+		cache.cleanupPolicy,
+		cache.cleanupInterval,
+	)
+	cache.cleanup = worker
+	cache.cleanupMu.Unlock()
+
+	worker.run()
+}
+
+// StopCleanup stops a running cleanup loop. It blocks until the cleanup loop
+// accepts the stop signal. Repeated calls are safe. StopCleanup is a no-op
+// when cleanup is not running or Cache is nil.
+func (cache *Cache[K, V]) StopCleanup() {
 	if cache == nil {
 		return
 	}
 
-	cache.closeOnce.Do(func() {
-		if cache.cleanup != nil {
-			cache.cleanup.close()
-		}
-	})
+	cache.cleanupMu.Lock()
+	defer cache.cleanupMu.Unlock()
+
+	worker := cache.cleanup
+	if worker == nil {
+		return
+	}
+
+	worker.stopCh <- struct{}{}
+	cache.cleanup = nil
 }
 
 func (cache *Cache[K, V]) effectiveTTL(expiration time.Duration) time.Duration {

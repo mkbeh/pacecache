@@ -34,7 +34,6 @@ func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	for range 2 {
 		value, found, err := cache.GetOrLoad(context.Background(), "key")
@@ -80,7 +79,6 @@ func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	value, found, err := cache.GetOrLoadFunc(
 		context.Background(),
@@ -114,7 +112,6 @@ func TestGetOrLoadEntryUsesDefaultLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	entry, found, err := cache.GetOrLoadEntry(context.Background(), "key")
 	if err != nil || !found || entry.Value() != 42 || entry.ExpiresAt().IsZero() {
@@ -142,7 +139,6 @@ func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithDefaultLoader() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	ownerDone := make(chan error, 1)
 	go func() {
@@ -605,7 +601,6 @@ func TestGetOrLoadUsesGenericKeyIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	key := testCompositeKey{TenantID: 7, UserID: 42}
 	equal := testCompositeKey{TenantID: 7, UserID: 42}
@@ -907,6 +902,5 @@ func newPublicationTestCache(t *testing.T) *Cache[string, string] {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	t.Cleanup(cache.Close)
 	return cache
 }

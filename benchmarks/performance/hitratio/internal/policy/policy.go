@@ -59,7 +59,3 @@ func (p *Policy) Ratio() float64 {
 
 	return 100 * float64(p.hits) / float64(total)
 }
-
-func (p *Policy) Close() {
-	p.cache.Close()
-}

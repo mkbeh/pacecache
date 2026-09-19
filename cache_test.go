@@ -29,8 +29,6 @@ func TestNilCacheIsSafe(t *testing.T) {
 	if _, _, err := cache.GetOrLoadEntry(context.Background(), "key"); !errors.Is(err, ErrNotInitialized) {
 		t.Fatalf("nil Cache.GetOrLoadEntry() error = %v, want ErrNotInitialized", err)
 	}
-
-	cache.Close()
 }
 
 func TestZeroValueCacheIsSafe(t *testing.T) {
@@ -53,7 +51,6 @@ func TestZeroValueCacheIsSafe(t *testing.T) {
 	cache.Delete()
 	cache.Delete("key")
 	cache.Clear()
-	cache.Close()
 
 	if got := cache.Stats(); got != (Stats{}) {
 		t.Fatalf("zero Cache.Stats() = %+v, want zero Stats", got)
@@ -77,20 +74,6 @@ func TestZeroValueCacheLoadReturnsNotInitialized(t *testing.T) {
 	)
 	if !errors.Is(err, ErrNotInitialized) {
 		t.Fatalf("zero Cache.GetOrLoadEntry() error = %v, want ErrNotInitialized", err)
-	}
-}
-
-func TestCloseIsIdempotentAndCacheRemainsUsable(t *testing.T) {
-	cache, err := New[string, int]()
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	cache.Close()
-	cache.Close()
-	cache.Set("key", 1, NoExpiration)
-	if value, found := cache.Get("key"); value != 1 || !found {
-		t.Fatalf("Get after Close = (%d, %t), want usable cache", value, found)
 	}
 }
 
@@ -165,7 +148,6 @@ func TestCacheSupportsInt64Keys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	cache.Set(42, "Ada", NoExpiration)
 
@@ -190,7 +172,6 @@ func TestCacheSupportsComparableStructKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	t.Cleanup(cache.Close)
 
 	stored := testCompositeKey{TenantID: 7, UserID: 42}
 	equal := testCompositeKey{TenantID: 7, UserID: 42}
@@ -259,8 +240,6 @@ func mustNewCache[V any](t *testing.T, options ...Option) *Cache[string, V] {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-
-	t.Cleanup(cache.Close)
 
 	return cache
 }

@@ -58,6 +58,7 @@ func defaultSettings() *settings {
 		maxEntries:         defaultMaxEntries,
 		segmentCount:       defaultStorageSegmentCount,
 		ttl:                defaultTTL,
+		cleanupInterval:    defaultCleanupInterval,
 		cleanupBatchSize:   defaultCleanupBatchSize,
 		cleanupEntryBudget: defaultCleanupEntryBudget,
 	}
@@ -161,19 +162,14 @@ func WithSlidingExpiration() Option {
 	}
 }
 
-// WithCleanupInterval enables periodic background physical removal of expired
-// entries.
+// WithCleanupInterval configures the interval between regular cleanup wakeups.
 //
-// The interval controls regular background cleanup wakeups. While expired
-// backlog remains, the cleaner may schedule bounded continuation work sooner.
-// The interval does not affect logical TTL precision or the internal expiration
-// bucket resolution.
+// The default is one minute. While expired backlog remains, the cleaner may
+// schedule bounded continuation work sooner. The interval does not affect
+// logical TTL precision or the internal expiration bucket resolution.
 //
-// Background cleanup is disabled by default. This is the only cleanup option
-// that starts a background worker; cleanup batch size and entry budget only
-// configure cleanup behavior. Manual cleanup through Cache.DeleteExpired is
-// always available without this option. When background cleanup is enabled,
-// Close must be called to stop the cleaner goroutine.
+// StartCleanup must be started explicitly. Manual cleanup through
+// Cache.DeleteExpired is always available.
 func WithCleanupInterval(interval time.Duration) Option {
 	return func(settings *settings) error {
 		if interval <= 0 {

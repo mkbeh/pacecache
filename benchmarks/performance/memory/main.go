@@ -45,7 +45,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("create cache: %v", err)
 	}
-	defer cache.Close()
 
 	for index := range *capacity {
 		key := keys[index]

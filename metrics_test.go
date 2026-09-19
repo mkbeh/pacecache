@@ -60,8 +60,11 @@ func TestMetricsRegistersSource(t *testing.T) {
 	if source.Name() != "users" {
 		t.Fatalf("source name = %q, want users", source.Name())
 	}
-	if _, ok := source.(interface{ Close() }); ok {
-		t.Fatal("metrics source unexpectedly exposes Cache.Close")
+	if _, ok := source.(interface{ StartCleanup() }); ok {
+		t.Fatal("metrics source unexpectedly exposes Cache.StartCleanup")
+	}
+	if _, ok := source.(interface{ StopCleanup() }); ok {
+		t.Fatal("metrics source unexpectedly exposes Cache.StopCleanup")
 	}
 
 	cache.Set("a", 1, NoExpiration)
@@ -103,8 +106,17 @@ func TestMetricsRegistersMultipleCaches(t *testing.T) {
 
 	byName := make(map[string]MetricsSource, len(sources))
 	for _, source := range sources {
-		if _, ok := source.(interface{ Close() }); ok {
-			t.Fatalf("metrics source %q unexpectedly exposes Cache.Close", source.Name())
+		if _, ok := source.(interface{ StartCleanup() }); ok {
+			t.Fatalf(
+				"metrics source %q unexpectedly exposes Cache.StartCleanup",
+				source.Name(),
+			)
+		}
+		if _, ok := source.(interface{ StopCleanup() }); ok {
+			t.Fatalf(
+				"metrics source %q unexpectedly exposes Cache.StopCleanup",
+				source.Name(),
+			)
 		}
 
 		if _, exists := byName[source.Name()]; exists {

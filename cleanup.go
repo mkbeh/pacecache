@@ -3,6 +3,7 @@ package pacecache
 import "time"
 
 const (
+	defaultCleanupInterval    = time.Minute
 	defaultCleanupBatchSize   = 256
 	defaultCleanupEntryBudget = 16 * 1024
 
@@ -21,8 +22,7 @@ type cleanupWorker[K comparable, V any] struct {
 
 	policy   cleanupPolicy
 	interval time.Duration
-	stop     chan struct{}
-	done     chan struct{}
+	stopCh   chan struct{}
 
 	// scratchSegments is reusable temporary storage for segment indexes that
 	// still have due entries after a multi-segment cleanup pass.
@@ -41,8 +41,7 @@ func newCleanupWorker[K comparable, V any](
 		stats:    stats,
 		policy:   policy,
 		interval: interval,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		stopCh:   make(chan struct{}),
 	}
 
 	if len(store.segments) > 1 {
@@ -52,23 +51,22 @@ func newCleanupWorker[K comparable, V any](
 	return worker
 }
 
-func (worker *cleanupWorker[K, V]) start() {
-	go worker.run()
-}
-
-func (worker *cleanupWorker[K, V]) close() {
-	close(worker.stop)
-	<-worker.done
-}
-
 func (worker *cleanupWorker[K, V]) run() {
 	timer := time.NewTimer(worker.interval)
 	defer timer.Stop()
-	defer close(worker.done)
 
 	for {
 		select {
+		case <-worker.stopCh:
+			return
+
 		case <-timer.C:
+			select {
+			case <-worker.stopCh:
+				return
+			default:
+			}
+
 			cutoff := worker.store.now()
 			pending := worker.cleanupQuantum(cutoff)
 			worker.stats.recordCleanupWorker(
@@ -82,9 +80,6 @@ func (worker *cleanupWorker[K, V]) run() {
 			}
 
 			timer.Reset(next)
-
-		case <-worker.stop:
-			return
 		}
 	}
 }
@@ -108,10 +103,6 @@ func (worker *cleanupWorker[K, V]) cleanupSingleSegment(cutoff int64) bool {
 	stats := worker.stats.segment(0)
 
 	for {
-		if worker.stopped() {
-			return false
-		}
-
 		if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
 			return true
 		}
@@ -140,11 +131,6 @@ func (worker *cleanupWorker[K, V]) cleanupSegments(cutoff int64) bool {
 	start := worker.nextSegment
 
 	for offset := range segmentCount {
-		if worker.stopped() {
-			worker.scratchSegments = pending[:0]
-			return false
-		}
-
 		if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
 			worker.nextSegment = (start + offset) % segmentCount
 			worker.scratchSegments = pending[:0]
@@ -173,11 +159,6 @@ func (worker *cleanupWorker[K, V]) cleanupSegments(cutoff int64) bool {
 		next := pending[:0]
 
 		for _, index := range pending {
-			if worker.stopped() {
-				worker.scratchSegments = pending[:0]
-				return false
-			}
-
 			if remaining == 0 || cleanupTimeBudgetExceeded(startedAt) {
 				// Resume from the first pending segment that this quantum did
 				// not get a chance to process.
@@ -209,15 +190,6 @@ func (worker *cleanupWorker[K, V]) cleanupSegments(cutoff int64) bool {
 
 func (worker *cleanupWorker[K, V]) nextDelay() time.Duration {
 	return min(worker.interval, cleanupNextDelay)
-}
-
-func (worker *cleanupWorker[K, V]) stopped() bool {
-	select {
-	case <-worker.stop:
-		return true
-	default:
-		return false
-	}
 }
 
 func cleanupTimeBudgetExceeded(startedAt time.Time) bool {

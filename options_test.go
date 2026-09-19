@@ -21,8 +21,15 @@ func TestDefaultSettings(t *testing.T) {
 	if settings.ttl != defaultTTL {
 		t.Fatalf("ttl = %v, want %v", settings.ttl, defaultTTL)
 	}
-	if settings.jitter != 0 || settings.cleanupInterval != 0 {
-		t.Fatalf("optional durations must be disabled by default: %+v", settings)
+	if settings.jitter != 0 {
+		t.Fatalf("jitter = %v, want 0", settings.jitter)
+	}
+	if settings.cleanupInterval != defaultCleanupInterval {
+		t.Fatalf(
+			"cleanupInterval = %v, want %v",
+			settings.cleanupInterval,
+			defaultCleanupInterval,
+		)
 	}
 	if settings.cleanupBatchSize != defaultCleanupBatchSize {
 		t.Fatalf("cleanupBatchSize = %d, want %d", settings.cleanupBatchSize, defaultCleanupBatchSize)

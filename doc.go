@@ -5,9 +5,9 @@
 // loading with configurable default or per-call loaders, duplicate load
 // suppression, and explicit removal.
 //
-// Background expiration cleanup is optional and can be enabled with
-// WithCleanupInterval. Cache.Close stops the cleanup worker and waits for it to
-// exit. Cache operations remain available after Close.
+// Background expiration cleanup is optional. StartCleanup runs the cleanup loop
+// and blocks until StopCleanup is called. WithCleanupInterval configures the
+// regular cleanup interval.
 //
 // Cache mutations act as publication barriers for concurrent loads, preventing
 // superseded loader results from overwriting newer cache state.

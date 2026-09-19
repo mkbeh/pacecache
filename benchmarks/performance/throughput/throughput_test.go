@@ -78,7 +78,6 @@ func runThroughputBenchmark(
 	b.Helper()
 
 	cache := newThroughputCache(b, maxEntries, data)
-	b.Cleanup(cache.Close)
 
 	var workers atomic.Uint64
 
@@ -152,7 +151,6 @@ func newThroughputCache(
 			return cache
 		}
 
-		cache.Close()
 	}
 
 	b.Fatalf(
