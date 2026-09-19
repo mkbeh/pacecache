@@ -44,7 +44,8 @@ type Cache[K comparable, V any] struct {
 //
 // Unless overridden by options, New uses the default cache capacity, a single
 // storage segment, and no time-based expiration. No default loader is
-// configured. Metrics and background cleanup are disabled by default.
+// configured. Metrics are disabled by default, and background cleanup is not
+// started automatically.
 func New[K comparable, V any](
 	options ...Option,
 ) (*Cache[K, V], error) {
@@ -108,9 +109,9 @@ func newCache[K comparable, V any](
 	return cache, nil
 }
 
-// StartCleanup runs periodic background expiration cleanup until StopCleanup is
-// called. StartCleanup blocks for the lifetime of the cleanup loop; callers that
-// want background cleanup should start it in a goroutine. If cleanup is already
+// StartCleanup runs periodic expiration cleanup until StopCleanup is called.
+// StartCleanup blocks for the lifetime of the cleanup loop; callers that want
+// background cleanup should start it in a goroutine. If cleanup is already
 // running, StartCleanup returns immediately.
 func (cache *Cache[K, V]) StartCleanup() {
 	if !cache.initialized() {

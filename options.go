@@ -168,8 +168,8 @@ func WithSlidingExpiration() Option {
 // schedule bounded continuation work sooner. The interval does not affect
 // logical TTL precision or the internal expiration bucket resolution.
 //
-// StartCleanup must be started explicitly. Manual cleanup through
-// Cache.DeleteExpired is always available.
+// Background cleanup must be started explicitly with StartCleanup. Manual
+// cleanup through Cache.DeleteExpired is always available.
 func WithCleanupInterval(interval time.Duration) Option {
 	return func(settings *settings) error {
 		if interval <= 0 {
@@ -224,8 +224,8 @@ func WithCleanupEntryBudget(entries int) Option {
 
 // WithMetrics configures optional cache metrics.
 //
-// The Metrics implementation may be reused by multiple caches and owns the
-// lifecycle of its registrations.
+// The Metrics implementation may be reused by multiple caches. The cache
+// does not manage the lifecycle of metrics registrations.
 func WithMetrics(metrics Metrics) Option {
 	return func(settings *settings) error {
 		settings.metrics = metrics
