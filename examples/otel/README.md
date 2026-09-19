@@ -12,7 +12,7 @@ OpenTelemetry SDK exporter without changing the cache integration.
 * Observing hits, misses, loader outcomes, and deletions
 * Handling not-found loader results without caching them
 * Flushing telemetry before a short-lived process exits
-* Managing cache and OpenTelemetry lifecycles correctly
+* Unregistering cache metrics before shutting down the OpenTelemetry SDK
 
 ## Run
 

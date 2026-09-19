@@ -36,7 +36,6 @@ func run(ctx context.Context) error {
 	}
 
 	users, err := pacecache.NewWithDefaultLoader[int64, user](
-		"users",
 		repository.find,
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(30*time.Second),
@@ -45,7 +44,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create users cache: %w", err)
 	}
-	defer users.Close()
 
 	// The first lookup loads the user from the underlying repository.
 	first, found, err := users.GetOrLoad(ctx, 42)
