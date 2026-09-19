@@ -162,7 +162,9 @@ cache, _ := pacecache.New[string, string](
 
 // Start automatic deletion of expired items.
 go cache.StartCleanup()
-defer cache.StopCleanup()
+
+// Stop automatic deletion of expired items.
+cache.StopCleanup()
 ```
 <!-- @formatter:on -->
 
