@@ -104,10 +104,12 @@ exists; successful results are cached using the cache's default expiration:
 <!-- @formatter:off -->
 ```go
 // Define a loader that fetches the value from an upstream source.
-loader := pacecache.Loader[string, string](func(ctx context.Context, key string) (string, bool, error) {
-    // Fetch data from a database, file, or remote service.
-    return "loaded value", true, nil
-})
+loader := pacecache.Loader[string, string](
+    func(ctx context.Context, key string) (string, bool, error) {
+        // Fetch data from a database, file, or remote service.
+        return "loaded value", true, nil
+    },
+)
 
 // Return the cached value or invoke the loader on a miss.
 value, found, err := cache.GetOrLoadFunc(ctx, "key", loader)
