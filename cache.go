@@ -1,7 +1,7 @@
 package pacecache
 
 import (
-	"fmt"
+	"math"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -14,6 +14,8 @@ const (
 	// NoExpiration disables time-based expiration for the entry.
 	NoExpiration time.Duration = -1
 )
+
+const maxDuration = time.Duration(math.MaxInt64)
 
 // Cache is a bounded in-process cache for keys of type K and values of type V.
 //
@@ -48,36 +50,29 @@ type Cache[K comparable, V any] struct {
 // configured. Background cleanup is not started automatically.
 func New[K comparable, V any](
 	options ...Option,
-) (*Cache[K, V], error) {
+) *Cache[K, V] {
 	return newCache[K, V](nil, options...)
 }
 
-// NewWithDefaultLoader creates a Cache with the given default loader.
+// NewWithLoader creates a Cache with the given default loader.
 //
 // The loader is used by GetOrLoad and GetOrLoadEntry when no live cache entry
 // exists. Per-call loaders may be supplied through GetOrLoadFunc and
-// GetOrLoadEntryFunc. Loader must not be nil.
+// GetOrLoadEntryFunc. A nil loader leaves the cache without a default loader.
 //
 // Options and background cleanup have the same semantics as New.
-func NewWithDefaultLoader[K comparable, V any](
+func NewWithLoader[K comparable, V any](
 	loader Loader[K, V],
 	options ...Option,
-) (*Cache[K, V], error) {
-	if loader == nil {
-		return nil, ErrNoLoader
-	}
-
-	return newCache[K, V](loader, options...)
+) *Cache[K, V] {
+	return newCache(loader, options...)
 }
 
 func newCache[K comparable, V any](
 	loader Loader[K, V],
 	options ...Option,
-) (*Cache[K, V], error) {
-	settings, err := newSettings(options...)
-	if err != nil {
-		return nil, fmt.Errorf("pacecache: %w", err)
-	}
+) *Cache[K, V] {
+	settings := newSettings(options...)
 
 	store := newStorage[K, V](
 		settings.maxEntries,
@@ -85,7 +80,7 @@ func newCache[K comparable, V any](
 		settings.slidingExpiration,
 	)
 
-	cache := &Cache[K, V]{
+	return &Cache[K, V]{
 		loader: loader,
 		name:   settings.name,
 
@@ -102,8 +97,6 @@ func newCache[K comparable, V any](
 		},
 		cleanupInterval: settings.cleanupInterval,
 	}
-
-	return cache, nil
 }
 
 // Name returns the optional logical name assigned to the cache.

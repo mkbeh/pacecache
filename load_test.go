@@ -9,13 +9,12 @@ import (
 	"time"
 )
 
-func TestNewWithDefaultLoaderRejectsNilLoader(t *testing.T) {
-	cache, err := NewWithDefaultLoader[string, int](nil)
-	if cache != nil {
-		t.Fatal("cache must be nil for nil default loader")
-	}
-	if !errors.Is(err, ErrNoLoader) {
-		t.Fatalf("NewWithDefaultLoader() error = %v, want ErrNoLoader", err)
+func TestNewWithLoaderNilLoaderReturnsErrNoLoaderOnMiss(t *testing.T) {
+	cache := NewWithLoader[string, int](nil)
+
+	value, found, err := cache.GetOrLoad(context.Background(), "missing")
+	if value != 0 || found || !errors.Is(err, ErrNoLoader) {
+		t.Fatalf("GetOrLoad() = (%d, %t, %v), want zero/false/ErrNoLoader", value, found, err)
 	}
 }
 
@@ -23,7 +22,7 @@ func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
 	var calls atomic.Int64
 	var loadedKey string
 
-	cache, err := NewWithDefaultLoader[string, int](
+	cache := NewWithLoader[string, int](
 		func(_ context.Context, key string) (int, bool, error) {
 			calls.Add(1)
 			loadedKey = key
@@ -31,10 +30,6 @@ func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
 			return 42, true, nil
 		},
 	)
-	if err != nil {
-		t.Fatalf("NewWithDefaultLoader() error = %v", err)
-	}
-
 	for range 2 {
 		value, found, err := cache.GetOrLoad(context.Background(), "key")
 		if err != nil || !found || value != 42 {
@@ -51,7 +46,7 @@ func TestGetOrLoadUsesDefaultLoader(t *testing.T) {
 }
 
 func TestGetOrLoadWithoutDefaultLoaderReturnsErrNoLoaderOnMiss(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 	cache.Set("cached", 7, NoExpiration)
 
 	value, found, err := cache.GetOrLoad(context.Background(), "cached")
@@ -65,21 +60,17 @@ func TestGetOrLoadWithoutDefaultLoaderReturnsErrNoLoaderOnMiss(t *testing.T) {
 	}
 }
 
-func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
+func TestGetOrLoadFuncOverridesDefaultLoader(t *testing.T) {
 	var defaultCalls atomic.Int64
 	var overrideCalls atomic.Int64
 
-	cache, err := NewWithDefaultLoader[string, int](
+	cache := NewWithLoader[string, int](
 		func(context.Context, string) (int, bool, error) {
 			defaultCalls.Add(1)
 
 			return 1, true, nil
 		},
 	)
-	if err != nil {
-		t.Fatalf("NewWithDefaultLoader() error = %v", err)
-	}
-
 	value, found, err := cache.GetOrLoadFunc(
 		context.Background(),
 		"override",
@@ -103,16 +94,12 @@ func TestGetOrLoadWithOverridesDefaultLoader(t *testing.T) {
 }
 
 func TestGetOrLoadEntryUsesDefaultLoader(t *testing.T) {
-	cache, err := NewWithDefaultLoader[string, int](
+	cache := NewWithLoader[string, int](
 		func(context.Context, string) (int, bool, error) {
 			return 42, true, nil
 		},
 		WithTTL(time.Minute),
 	)
-	if err != nil {
-		t.Fatalf("NewWithDefaultLoader() error = %v", err)
-	}
-
 	entry, found, err := cache.GetOrLoadEntry(context.Background(), "key")
 	if err != nil || !found || entry.Value() != 42 || entry.ExpiresAt().IsZero() {
 		t.Fatalf("GetOrLoadEntry() = (%+v, %t, %v), want value=42 with expiration", entry, found, err)
@@ -125,7 +112,7 @@ func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
 	var defaultCalls atomic.Int64
 	var overrideCalls atomic.Int64
 
-	cache, err := NewWithDefaultLoader[string, int](
+	cache := NewWithLoader[string, int](
 		func(context.Context, string) (int, bool, error) {
 			defaultCalls.Add(1)
 			close(started)
@@ -136,10 +123,6 @@ func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 	)
-	if err != nil {
-		t.Fatalf("NewWithDefaultLoader() error = %v", err)
-	}
-
 	ownerDone := make(chan error, 1)
 	go func() {
 		value, found, err := cache.GetOrLoad(context.Background(), "key")
@@ -186,7 +169,7 @@ func TestDefaultAndExplicitLoadersShareOneWave(t *testing.T) {
 }
 
 func TestGetOrLoadCachesPositiveResult(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 	var calls atomic.Int64
 
 	loader := func(context.Context, string) (int, bool, error) {
@@ -210,7 +193,7 @@ func TestGetOrLoadCachesPositiveResult(t *testing.T) {
 }
 
 func TestGetOrLoadNotFoundIsNotCached(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(1))
 	var calls atomic.Int64
 
 	loader := func(context.Context, string) (int, bool, error) {
@@ -238,8 +221,7 @@ func TestGetOrLoadNotFoundIsNotCached(t *testing.T) {
 }
 
 func TestGetOrLoadEntryPositiveAndNotFound(t *testing.T) {
-	cache := mustNewCache[int](
-		t,
+	cache := newTestCache[int](
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(time.Minute),
@@ -268,7 +250,7 @@ func TestGetOrLoadEntryPositiveAndNotFound(t *testing.T) {
 }
 
 func TestGetOrLoadErrorsAreNotCached(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 	sentinel := errors.New("load failed")
 	var calls atomic.Int64
 
@@ -293,7 +275,7 @@ func TestGetOrLoadErrorsAreNotCached(t *testing.T) {
 }
 
 func TestGetOrLoadLoaderPanicPropagatesToCallerAndDoesNotPoisonKey(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 	wantErr := errors.New("boom")
 
 	var recovered any
@@ -335,7 +317,7 @@ func TestGetOrLoadLoaderPanicPropagatesToCallerAndDoesNotPoisonKey(t *testing.T)
 }
 
 func TestGetOrLoadValidatesContextAndLoader(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 
 	if _, _, err := cache.GetOrLoadFunc(nil, "key", func(context.Context, string) (int, bool, error) {
 		return 1, true, nil
@@ -355,7 +337,7 @@ func TestGetOrLoadValidatesContextAndLoader(t *testing.T) {
 }
 
 func TestGetOrLoadCanceledMissDoesNotStartLoader(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -373,7 +355,7 @@ func TestGetOrLoadCanceledMissDoesNotStartLoader(t *testing.T) {
 }
 
 func TestGetOrLoadCachedHitIgnoresCanceledContext(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 	cache.Set("key", 7, NoExpiration)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -389,7 +371,7 @@ func TestGetOrLoadCachedHitIgnoresCanceledContext(t *testing.T) {
 }
 
 func TestGetOrLoadCoalescesConcurrentMisses(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(32), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(32), WithSegmentCount(1))
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -465,7 +447,7 @@ func TestGetOrLoadCoalescesConcurrentMisses(t *testing.T) {
 }
 
 func TestGetOrLoadWaiterCanCancelWithoutCancelingSharedLoad(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(1))
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -513,8 +495,7 @@ func TestGetOrLoadWaiterCanCancelWithoutCancelingSharedLoad(t *testing.T) {
 }
 
 func TestGetOrLoadAndGetOrLoadEntryShareOneWave(t *testing.T) {
-	cache := mustNewCache[int](
-		t,
+	cache := newTestCache[int](
 		WithMaxEntries(8),
 		WithSegmentCount(1),
 		WithTTL(time.Minute),
@@ -597,10 +578,7 @@ func TestGetOrLoadAndGetOrLoadEntryShareOneWave(t *testing.T) {
 }
 
 func TestGetOrLoadUsesGenericKeyIdentity(t *testing.T) {
-	cache, err := New[testCompositeKey, int](WithMaxEntries(8), WithSegmentCount(2))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	cache := New[testCompositeKey, int](WithMaxEntries(8), WithSegmentCount(2))
 
 	key := testCompositeKey{TenantID: 7, UserID: 42}
 	equal := testCompositeKey{TenantID: 7, UserID: 42}
@@ -632,7 +610,7 @@ type publicationLoadResult[V any] struct {
 }
 
 func TestGetOrLoadSetSameKeySupersedesInflightFoundLoad(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	started, release, result := startPublicationLoad(cache, "key", "old", true, nil)
 
 	waitTestSignal(t, started)
@@ -649,7 +627,7 @@ func TestGetOrLoadSetSameKeySupersedesInflightFoundLoad(t *testing.T) {
 }
 
 func TestGetOrLoadDeleteSameKeySupersedesInflightFoundLoad(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	started, release, result := startPublicationLoad(cache, "key", "old", true, nil)
 
 	waitTestSignal(t, started)
@@ -669,7 +647,7 @@ func TestGetOrLoadDeleteSameKeySupersedesInflightFoundLoad(t *testing.T) {
 }
 
 func TestGetOrLoadSetSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	started, release, result := startPublicationLoad(cache, "key", "ignored", false, nil)
 
 	waitTestSignal(t, started)
@@ -686,7 +664,7 @@ func TestGetOrLoadSetSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
 }
 
 func TestGetOrLoadDeleteSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	started, release, result := startPublicationLoad(cache, "key", "ignored", false, nil)
 
 	waitTestSignal(t, started)
@@ -703,7 +681,7 @@ func TestGetOrLoadDeleteSameKeySupersedesInflightNotFoundLoad(t *testing.T) {
 }
 
 func TestGetOrLoadLoaderErrorPrecedesSuperseded(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	sentinel := errors.New("loader failed")
 	started, release, result := startPublicationLoad(cache, "key", "ignored", false, sentinel)
 
@@ -723,7 +701,7 @@ func TestGetOrLoadLoaderErrorPrecedesSuperseded(t *testing.T) {
 }
 
 func TestGetOrLoadSetOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	started, release, result := startPublicationLoad(cache, "key-1", "loaded", true, nil)
 
 	waitTestSignal(t, started)
@@ -736,7 +714,7 @@ func TestGetOrLoadSetOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
 }
 
 func TestGetOrLoadDeleteOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	cache.Set("key-2", "other", NoExpiration)
 	started, release, result := startPublicationLoad(cache, "key-1", "loaded", true, nil)
 
@@ -750,7 +728,7 @@ func TestGetOrLoadDeleteOtherKeySameSegmentDoesNotSupersede(t *testing.T) {
 }
 
 func TestGetOrLoadBatchDeleteOtherKeysSameSegmentDoesNotSupersede(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	cache.Set("key-2", "other-2", NoExpiration)
 	cache.Set("key-3", "other-3", NoExpiration)
 	started, release, result := startPublicationLoad(cache, "key-1", "loaded", true, nil)
@@ -764,7 +742,7 @@ func TestGetOrLoadBatchDeleteOtherKeysSameSegmentDoesNotSupersede(t *testing.T) 
 }
 
 func TestGetOrLoadClearSupersedesAllInflightLoads(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 
 	firstStarted, firstRelease, firstResult := startPublicationLoad(cache, "first", "one", true, nil)
 	secondStarted, secondRelease, secondResult := startPublicationLoad(cache, "second", "two", true, nil)
@@ -788,7 +766,7 @@ func TestGetOrLoadClearSupersedesAllInflightLoads(t *testing.T) {
 }
 
 func TestGetOrLoadEntrySetSameKeyReturnsSupersededZeroEntry(t *testing.T) {
-	cache := newPublicationTestCache(t)
+	cache := newPublicationTestCache()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan struct {
@@ -891,16 +869,9 @@ func assertCacheMiss(t *testing.T, cache *Cache[string, string], key string) {
 	}
 }
 
-func newPublicationTestCache(t *testing.T) *Cache[string, string] {
-	t.Helper()
-
-	cache, err := New[string, string](
+func newPublicationTestCache() *Cache[string, string] {
+	return New[string, string](
 		WithMaxEntries(64),
 		WithSegmentCount(1),
 	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	return cache
 }

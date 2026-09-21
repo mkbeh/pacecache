@@ -19,7 +19,7 @@ func New(cfg config.Config) Simulator {
 	}
 }
 
-func (s Simulator) Simulate(output io.Writer) error {
+func (s Simulator) Simulate(output io.Writer) {
 	fmt.Fprintln(
 		output,
 		"trace,capacity,segments,requests,hits,misses,hit_ratio",
@@ -28,10 +28,7 @@ func (s Simulator) Simulate(output io.Writer) error {
 	for _, unsignedCapacity := range s.cfg.Capacities {
 		capacity := int(unsignedCapacity)
 
-		result, err := s.simulateCapacity(capacity)
-		if err != nil {
-			return err
-		}
+		result := s.simulateCapacity(capacity)
 
 		fmt.Fprintf(
 			output,
@@ -46,7 +43,6 @@ func (s Simulator) Simulate(output io.Writer) error {
 		)
 	}
 
-	return nil
 }
 
 type result struct {
@@ -56,11 +52,8 @@ type result struct {
 	Ratio    float64
 }
 
-func (s Simulator) simulateCapacity(capacity int) (result, error) {
-	p, err := policy.New(capacity, s.cfg.Segments)
-	if err != nil {
-		return result{}, fmt.Errorf("create policy for capacity %d: %w", capacity, err)
-	}
+func (s Simulator) simulateCapacity(capacity int) result {
+	p := policy.New(capacity, s.cfg.Segments)
 
 	generator := trace.NewZipf(
 		s.cfg.Zipf.S,
@@ -86,5 +79,5 @@ func (s Simulator) simulateCapacity(capacity int) (result, error) {
 		Hits:     hits,
 		Misses:   misses,
 		Ratio:    p.Ratio(),
-	}, nil
+	}
 }

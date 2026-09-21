@@ -46,10 +46,7 @@ Create a cache with `pacecache.New`:
 
 <!-- @formatter:off -->
 ```go
-cache, err := pacecache.New[string, string]()
-if err != nil {
-    panic(err)
-}
+cache := pacecache.New[string, string]()
 ```
 <!-- @formatter:on -->
 
@@ -62,7 +59,7 @@ deadlines and reduce synchronized expiration bursts. Individual entries can use 
 
 <!-- @formatter:off -->
 ```go
-cache, _ := pacecache.New[string, string](
+cache := pacecache.New[string, string](
     pacecache.WithTTL(5*time.Minute),
     pacecache.WithJitter(30*time.Second),
 )
@@ -124,11 +121,11 @@ if found {
 ```
 <!-- @formatter:on -->
 
-If the same loader is reused across calls, configure it once with `NewWithDefaultLoader` and use `GetOrLoad`:
+If the same loader is reused across calls, configure it once with `NewWithLoader` and use `GetOrLoad`:
 
 <!-- @formatter:off -->
 ```go
-cache, _ := pacecache.NewWithDefaultLoader[string, string](
+cache := pacecache.NewWithLoader[string, string](
     func(ctx context.Context, key string) (string, bool, error) {
         // Fetch data from a database, file, or remote service.
         return "loaded value", true, nil
@@ -156,7 +153,7 @@ Expired entries are removed lazily when encountered. Background cleanup can be s
 
 <!-- @formatter:off -->
 ```go
-cache, _ := pacecache.New[string, string](
+cache := pacecache.New[string, string](
     pacecache.WithTTL(5*time.Minute),
 )
 

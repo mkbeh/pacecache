@@ -66,15 +66,12 @@ func run(ctx context.Context) error {
 		},
 	}
 
-	users, err := pacecache.NewWithDefaultLoader[int64, user](
+	users := pacecache.NewWithLoader[int64, user](
 		repository.find,
 		pacecache.WithName("users"),
 		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(time.Minute),
 	)
-	if err != nil {
-		return fmt.Errorf("create users cache: %w", err)
-	}
 
 	if err := metrics.Register(users); err != nil {
 		return fmt.Errorf("register users cache metrics: %w", err)

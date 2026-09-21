@@ -33,12 +33,9 @@ metrics := paceotel.New(
 )
 defer metrics.Unregister()
 
-cache, err := pacecache.New[string, string](
+cache := pacecache.New[string, string](
     pacecache.WithName("users"),
 )
-if err != nil {
-    panic(err)
-}
 
 // Register the cache with the OpenTelemetry integration.
 if err := metrics.Register(cache); err != nil {

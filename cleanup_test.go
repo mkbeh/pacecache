@@ -47,25 +47,17 @@ func TestCleanupWorkerEmptyStorage(t *testing.T) {
 }
 
 func TestNewDoesNotStartCleanup(t *testing.T) {
-	cache, err := New[string, int](WithCleanupInterval(time.Millisecond))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
+	cache := New[string, int](WithCleanupInterval(time.Millisecond))
 	if cache.cleanup != nil {
 		t.Fatal("cleanup unexpectedly running after New")
 	}
 }
 
 func TestStartCleanupRemovesExpiredEntry(t *testing.T) {
-	cache, err := New[string, int](
+	cache := New[string, int](
 		WithMaxEntries(1),
 		WithCleanupInterval(time.Millisecond),
 	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
 	cache.store.enableExpirationIndex(time.Nanosecond)
 	cache.Set("key", 1, time.Millisecond)
 	time.Sleep(2 * time.Millisecond)
@@ -95,7 +87,7 @@ func TestStartCleanupRemovesExpiredEntry(t *testing.T) {
 }
 
 func TestStopCleanupWithoutStartIsNoop(t *testing.T) {
-	cache := mustNewCache[int](t)
+	cache := newTestCache[int]()
 
 	done := make(chan struct{})
 	go func() {
@@ -107,11 +99,7 @@ func TestStopCleanupWithoutStartIsNoop(t *testing.T) {
 }
 
 func TestStopCleanupStopsRunningWorker(t *testing.T) {
-	cache, err := New[string, int](WithCleanupInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
+	cache := New[string, int](WithCleanupInterval(time.Hour))
 	done := startTestCleanup(t, cache)
 
 	cache.StopCleanup()
@@ -121,11 +109,7 @@ func TestStopCleanupStopsRunningWorker(t *testing.T) {
 }
 
 func TestStopCleanupConcurrent(t *testing.T) {
-	cache, err := New[string, int](WithCleanupInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
+	cache := New[string, int](WithCleanupInterval(time.Hour))
 	done := startTestCleanup(t, cache)
 
 	const callers = 16
@@ -143,11 +127,7 @@ func TestStopCleanupConcurrent(t *testing.T) {
 }
 
 func TestStartCleanupCanRestart(t *testing.T) {
-	cache, err := New[string, int](WithCleanupInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
+	cache := New[string, int](WithCleanupInterval(time.Hour))
 	firstDone := startTestCleanup(t, cache)
 	cache.StopCleanup()
 	waitTestSignal(t, firstDone)
@@ -158,11 +138,7 @@ func TestStartCleanupCanRestart(t *testing.T) {
 }
 
 func TestStartCleanupReturnsWhenAlreadyRunning(t *testing.T) {
-	cache, err := New[string, int](WithCleanupInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
+	cache := New[string, int](WithCleanupInterval(time.Hour))
 	firstDone := startTestCleanup(t, cache)
 
 	secondDone := make(chan struct{})
@@ -283,15 +259,11 @@ func TestCleanupWorkerRunSchedulesContinuationForBacklog(t *testing.T) {
 }
 
 func TestCacheCleanupUsesConfiguredLimits(t *testing.T) {
-	cache, err := New[string, int](
+	cache := New[string, int](
 		WithCleanupInterval(time.Hour),
 		WithCleanupBatchSize(7),
 		WithCleanupEntryBudget(11),
 	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
 	if cache.cleanupInterval != time.Hour {
 		t.Fatalf("cleanup interval = %v, want 1h", cache.cleanupInterval)
 	}

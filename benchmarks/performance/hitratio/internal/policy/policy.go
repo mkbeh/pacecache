@@ -1,10 +1,6 @@
 package policy
 
-import (
-	"fmt"
-
-	"github.com/mkbeh/pacecache"
-)
+import "github.com/mkbeh/pacecache"
 
 type Policy struct {
 	cache *pacecache.Cache[uint64, uint64]
@@ -13,18 +9,13 @@ type Policy struct {
 	misses uint64
 }
 
-func New(capacity int, segments int) (*Policy, error) {
-	cache, err := pacecache.New[uint64, uint64](
-		pacecache.WithMaxEntries(capacity),
-		pacecache.WithSegmentCount(segments),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create cache: %w", err)
-	}
-
+func New(capacity int, segments int) *Policy {
 	return &Policy{
-		cache: cache,
-	}, nil
+		cache: pacecache.New[uint64, uint64](
+			pacecache.WithMaxEntries(capacity),
+			pacecache.WithSegmentCount(segments),
+		),
+	}
 }
 
 func (p *Policy) Record(key uint64) {

@@ -9,7 +9,7 @@ import (
 )
 
 func TestCacheGetAndDelete(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(1))
 	cache.Set("key", 42, NoExpiration)
 
 	before := cache.Stats()
@@ -40,7 +40,7 @@ func TestCacheGetAndDelete(t *testing.T) {
 }
 
 func TestCacheGetAndDeleteIsAtomic(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(1))
 	cache.Set("key", 42, NoExpiration)
 
 	const callers = 32
@@ -94,7 +94,7 @@ func TestCacheGetAndDeleteIsAtomic(t *testing.T) {
 }
 
 func TestCacheGetAndDeleteExpiredEntry(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(1))
 	index := cache.store.segmentIndex("expired")
 
 	cache.store.setAt(
@@ -126,7 +126,7 @@ func TestCacheGetAndDeleteExpiredEntry(t *testing.T) {
 }
 
 func TestCacheGetAndDeleteSupersedesInflightLoad(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(1))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(1))
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -200,7 +200,7 @@ func TestDeleteMultipleKeysAndDuplicates(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cache := mustNewCache[int](t, test.options...)
+			cache := newTestCache[int](test.options...)
 			cache.Set("a", 1, NoExpiration)
 			cache.Set("b", 2, NoExpiration)
 			cache.Set("c", 3, NoExpiration)
@@ -224,7 +224,7 @@ func TestDeleteMultipleKeysAndDuplicates(t *testing.T) {
 }
 
 func TestConcurrentMultiKeyDeletionLockOrderDoesNotDeadlock(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(16), WithSegmentCount(8))
+	cache := newTestCache[int](WithMaxEntries(16), WithSegmentCount(8))
 	cache.Set("a", 1, NoExpiration)
 	cache.Set("b", 2, NoExpiration)
 
@@ -243,7 +243,7 @@ func TestConcurrentMultiKeyDeletionLockOrderDoesNotDeadlock(t *testing.T) {
 }
 
 func TestCacheClear(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(8), WithSegmentCount(2))
+	cache := newTestCache[int](WithMaxEntries(8), WithSegmentCount(2))
 	cache.Set("a", 1, NoExpiration)
 	cache.Set("b", 2, NoExpiration)
 

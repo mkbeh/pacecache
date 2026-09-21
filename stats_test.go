@@ -139,7 +139,7 @@ func TestStatsRecordHelpers(t *testing.T) {
 }
 
 func TestStatsConcurrentWithCacheOperations(t *testing.T) {
-	cache := mustNewCache[int](t, WithMaxEntries(128), WithSegmentCount(8))
+	cache := newTestCache[int](WithMaxEntries(128), WithSegmentCount(8))
 
 	var group sync.WaitGroup
 	for worker := range 8 {

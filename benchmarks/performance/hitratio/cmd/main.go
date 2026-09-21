@@ -35,9 +35,7 @@ func run(configPath string) error {
 
 	app := simulator.New(cfg)
 
-	if err := app.Simulate(os.Stdout); err != nil {
-		return fmt.Errorf("simulate trace: %w", err)
-	}
+	app.Simulate(os.Stdout)
 
 	return nil
 }
