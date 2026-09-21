@@ -46,10 +46,7 @@ Create a cache with `pacecache.New`:
 
 <!-- @formatter:off -->
 ```go
-cache, err := pacecache.New[string, string]()
-if err != nil {
-    panic(err)
-}
+cache := pacecache.New[string, string]()
 ```
 <!-- @formatter:on -->
 
@@ -62,7 +59,7 @@ deadlines and reduce synchronized expiration bursts. Individual entries can use 
 
 <!-- @formatter:off -->
 ```go
-cache, _ := pacecache.New[string, string](
+cache := pacecache.New[string, string](
     pacecache.WithTTL(5*time.Minute),
     pacecache.WithJitter(30*time.Second),
 )
@@ -114,21 +111,15 @@ loader := pacecache.Loader[string, string](func(ctx context.Context, key string)
 
 // Return the cached value or invoke the loader on a miss.
 value, found, err := cache.GetOrLoadFunc(ctx, "key", loader)
-if err != nil {
-    panic(err)
-}
-
-if found {
-    fmt.Println("retrieved value:", value) // loaded key
-}
+fmt.Println("retrieved value:", value) // loaded value
 ```
 <!-- @formatter:on -->
 
-If the same loader is reused across calls, configure it once with `NewWithDefaultLoader` and use `GetOrLoad`:
+If the same loader is reused across calls, configure it once with `NewWithLoader` and use `GetOrLoad`:
 
 <!-- @formatter:off -->
 ```go
-cache, _ := pacecache.NewWithDefaultLoader[string, string](
+cache := pacecache.NewWithLoader[string, string](
     func(ctx context.Context, key string) (string, bool, error) {
         // Fetch data from a database, file, or remote service.
         return "loaded value", true, nil
@@ -138,13 +129,7 @@ cache, _ := pacecache.NewWithDefaultLoader[string, string](
 
 // Return the cached value or invoke the configured loader on a miss.
 value, found, err := cache.GetOrLoad(ctx, "key")
-if err != nil {
-    panic(err)
-}
-
-if found {
-    fmt.Println("retrieved value:", value) // loaded key
-}
+fmt.Println("retrieved value:", value) // loaded value
 ```
 <!-- @formatter:on -->
 
@@ -156,7 +141,7 @@ Expired entries are removed lazily when encountered. Background cleanup can be s
 
 <!-- @formatter:off -->
 ```go
-cache, _ := pacecache.New[string, string](
+cache := pacecache.New[string, string](
     pacecache.WithTTL(5*time.Minute),
 )
 
@@ -225,9 +210,9 @@ _ = stats.ClearedEntryCount // Entries removed by full cache clears
 Statistics also include load outcomes, shared and superseded loads, deleted and cleared entry counts, cleanup activity,
 and segment count.
 
-Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel). OpenTelemetry configuration and
-exporter selection remain application concerns, so Prometheus, OTLP, and other exporters can be used without changing
-the cache integration.
+Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel) and are registered explicitly for
+each cache. OpenTelemetry configuration and exporter selection remain application concerns, so Prometheus, OTLP, and
+other exporters can be used without changing the cache integration.
 
 For a complete setup, see the [example](./examples/otel).
 

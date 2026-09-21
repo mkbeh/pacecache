@@ -11,6 +11,9 @@ import (
 func TestNilCacheIsSafe(t *testing.T) {
 	var cache *Cache[string, int]
 
+	if cache.Name() != "" {
+		t.Fatalf("nil Cache.Name() = %q, want empty", cache.Name())
+	}
 	if cache.Exists("key") {
 		t.Fatal("nil Cache.Exists() = true, want false")
 	}
@@ -34,6 +37,9 @@ func TestNilCacheIsSafe(t *testing.T) {
 func TestZeroValueCacheIsSafe(t *testing.T) {
 	var cache Cache[string, int]
 
+	if cache.Name() != "" {
+		t.Fatalf("zero Cache.Name() = %q, want empty", cache.Name())
+	}
 	if cache.Exists("key") || cache.RefreshTTL("key") {
 		t.Fatal("zero Cache unexpectedly reports a live key")
 	}
@@ -77,7 +83,7 @@ func TestZeroValueCacheLoadReturnsNotInitialized(t *testing.T) {
 	}
 }
 
-func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
+func TestCacheEffectiveTTL(t *testing.T) {
 	cache := &Cache[string, int]{ttl: 10 * time.Second}
 
 	if got := cache.effectiveTTL(DefaultExpiration); got != 10*time.Second {
@@ -97,7 +103,9 @@ func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
 			t.Fatalf("jittered TTL = %v, want [5s,6s)", got)
 		}
 	}
+}
 
+func TestDeadlineAfter(t *testing.T) {
 	if got := deadlineAfter(100, 0); got != 0 {
 		t.Fatalf("deadlineAfter zero = %d, want 0", got)
 	}
@@ -110,7 +118,9 @@ func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
 	if got := deadlineAfter(int64(maxDuration)-5, 10*time.Nanosecond); got != int64(maxDuration) {
 		t.Fatalf("saturated deadline = %d, want %d", got, int64(maxDuration))
 	}
+}
 
+func TestJitteredTTL(t *testing.T) {
 	if got := jitteredTTL(5*time.Second, 0); got != 5*time.Second {
 		t.Fatalf("jitteredTTL without jitter = %v", got)
 	}
@@ -119,8 +129,20 @@ func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
 	}
 }
 
+func TestCacheName(t *testing.T) {
+	named := newTestCache[int](WithName("users"))
+	if got := named.Name(); got != "users" {
+		t.Fatalf("Name() = %q, want users", got)
+	}
+
+	unnamed := newTestCache[int]()
+	if got := unnamed.Name(); got != "" {
+		t.Fatalf("unnamed Name() = %q, want empty", got)
+	}
+}
+
 func TestNewEnablesSlidingExpiration(t *testing.T) {
-	cache := mustNewCache[int](t, WithSlidingExpiration())
+	cache := newTestCache[int](WithSlidingExpiration())
 	for index := range cache.store.segments {
 		if !cache.store.segments[index].slidingExpiration {
 			t.Fatalf("segment %d sliding expiration disabled", index)
@@ -128,13 +150,12 @@ func TestNewEnablesSlidingExpiration(t *testing.T) {
 	}
 }
 
-func TestNewWrapsConfigurationError(t *testing.T) {
-	cache, err := New[string, int](WithMaxEntries(2), WithSegmentCount(3))
-	if cache != nil {
-		t.Fatal("cache must be nil for invalid configuration")
-	}
-	if err == nil || err.Error() != "pacecache: invalid configuration: segment count must not exceed max entries" {
-		t.Fatalf("New() error = %v", err)
+func TestNewClampsSegmentCountToMaxEntries(t *testing.T) {
+	cache := New[string, int](WithMaxEntries(2), WithSegmentCount(3))
+
+	stats := cache.Stats()
+	if stats.MaxEntries != 2 || stats.SegmentCount != 2 {
+		t.Fatalf("Stats() = maxEntries:%d segmentCount:%d, want 2/2", stats.MaxEntries, stats.SegmentCount)
 	}
 }
 
@@ -144,10 +165,7 @@ type testCompositeKey struct {
 }
 
 func TestCacheSupportsInt64Keys(t *testing.T) {
-	cache, err := New[int64, string](WithMaxEntries(8), WithSegmentCount(2))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	cache := New[int64, string](WithMaxEntries(8), WithSegmentCount(2))
 
 	cache.Set(42, "Ada", NoExpiration)
 
@@ -168,10 +186,7 @@ func TestCacheSupportsInt64Keys(t *testing.T) {
 }
 
 func TestCacheSupportsComparableStructKeys(t *testing.T) {
-	cache, err := New[testCompositeKey, int](WithMaxEntries(8), WithSegmentCount(2))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	cache := New[testCompositeKey, int](WithMaxEntries(8), WithSegmentCount(2))
 
 	stored := testCompositeKey{TenantID: 7, UserID: 42}
 	equal := testCompositeKey{TenantID: 7, UserID: 42}
@@ -233,15 +248,8 @@ func (ctx *observedWaitContext) cancel() {
 
 const testTimeout = 5 * time.Second
 
-func mustNewCache[V any](t *testing.T, options ...Option) *Cache[string, V] {
-	t.Helper()
-
-	cache, err := New[string, V](options...)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	return cache
+func newTestCache[V any](options ...Option) *Cache[string, V] {
+	return New[string, V](options...)
 }
 
 func requirePanic(t *testing.T, fn func()) {

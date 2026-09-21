@@ -8,8 +8,15 @@ import (
 
 	"github.com/mkbeh/pacecache"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// Source exposes the cache identity and statistics required by Metrics.
+type Source interface {
+	Name() string
+	Stats() pacecache.Stats
+}
 
 // Metrics exports pacecache statistics through OpenTelemetry.
 //
@@ -24,8 +31,6 @@ type Metrics struct {
 	registrations map[string]metric.Registration
 	closed        bool
 }
-
-var _ pacecache.Metrics = (*Metrics)(nil)
 
 // New creates an OpenTelemetry metrics implementation.
 //
@@ -57,8 +62,10 @@ func New(options ...Option) *Metrics {
 
 // Register adds one cache metrics source to this OpenTelemetry integration.
 // The source name must be unique within Metrics. An empty name is allowed, but
-// only one unnamed source may be registered.
-func (metrics *Metrics) Register(source pacecache.MetricsSource) error {
+// only one unnamed source may be registered. Additional attributes are attached
+// to every metric observation for the source. paceotel-owned attributes take
+// precedence over attributes with the same keys.
+func (metrics *Metrics) Register(source Source, attributes ...attribute.KeyValue) error {
 	if metrics == nil {
 		return errors.New("paceotel: metrics is nil")
 	}
@@ -91,7 +98,7 @@ func (metrics *Metrics) Register(source pacecache.MetricsSource) error {
 
 	registration, err := metrics.registerCallback(
 		source,
-		newMetricAttributes(name),
+		newMetricAttributes(name, attributes...),
 	)
 	if err != nil {
 		return err
@@ -141,10 +148,7 @@ func (metrics *Metrics) Unregister() error {
 	return nil
 }
 
-func (metrics *Metrics) registerCallback(
-	source pacecache.MetricsSource,
-	attributes metricAttributes,
-) (metric.Registration, error) {
+func (metrics *Metrics) registerCallback(source Source, attributes metricAttributes) (metric.Registration, error) {
 	instruments := *metrics.instruments
 
 	registration, err := metrics.meter.RegisterCallback(

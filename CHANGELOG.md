@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## v1.4.0
+
+This release simplifies cache construction and decouples the core cache API from optional metrics integrations.
+
+### Added
+
+* **Cache Name:** Added `Cache.Name` for retrieving the optional name configured through `WithName`.
+
+### Changed
+
+* **Constructors:** `New` and `NewWithLoader` now return a cache directly without an error. `NewWithDefaultLoader` was
+  renamed to `NewWithLoader`.
+* **Options:** Options are now infallible. Invalid values leave the current setting unchanged, while segment counts
+  exceeding the entry budget are capped at the configured maximum.
+* **Loader Configuration:** `NewWithLoader` now accepts a nil loader. `GetOrLoad` and `GetOrLoadEntry` return
+  `ErrNoLoader` on a cache miss when no loader is configured.
+* **Metrics Integration:** Metrics registration is now handled explicitly by integrations through `Cache.Name` and
+  `Cache.Stats`.
+
+### Removed
+
+* **Core Metrics API:** Removed `WithMetrics`, `Metrics`, and `MetricsSource` from the core package.
+
+## extra/paceotel/v1.4.0
+
+This release makes OpenTelemetry registration explicit and independent from the core cache lifecycle.
+
+### Added
+
+* **Source Interface:** Added `Source` for exposing the cache name and statistics required for metrics collection.
+* **Registration Attributes:** `Metrics.Register` now accepts additional OpenTelemetry attributes for each source.
+
+### Changed
+
+* **Metrics Registration:** Cache sources are now registered explicitly through `Metrics.Register` instead of
+  `pacecache.WithMetrics`.
+* **Core Dependency:** Updated `github.com/mkbeh/pacecache` to v1.4.0.
+
 ## v1.3.0
 
 This release simplifies cache construction, makes background cleanup lifecycle explicit, and streamlines metrics

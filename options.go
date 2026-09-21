@@ -1,20 +1,16 @@
 package pacecache
 
 import (
-	"errors"
-	"fmt"
-	"math"
 	"time"
 )
 
 const (
 	defaultMaxEntries = 10_000
 	defaultTTL        = NoExpiration
-	maxDuration       = time.Duration(math.MaxInt64)
 )
 
-// Option configures a Cache created by New or NewWithDefaultLoader.
-type Option func(*settings) error
+// Option configures a Cache created by New or NewWithLoader.
+type Option func(*settings)
 
 type settings struct {
 	name string
@@ -29,28 +25,22 @@ type settings struct {
 	cleanupInterval    time.Duration
 	cleanupBatchSize   int
 	cleanupEntryBudget int
-
-	metrics Metrics
 }
 
-func newSettings(options ...Option) (*settings, error) {
+func newSettings(options ...Option) *settings {
 	settings := defaultSettings()
 
-	for index, option := range options {
-		if option == nil {
-			return nil, fmt.Errorf("option %d is nil", index)
-		}
-
-		if err := option(settings); err != nil {
-			return nil, fmt.Errorf("apply option %d: %w", index, err)
+	for _, option := range options {
+		if option != nil {
+			option(settings)
 		}
 	}
 
-	if err := settings.validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+	if settings.segmentCount > settings.maxEntries {
+		settings.segmentCount = settings.maxEntries
 	}
 
-	return settings, nil
+	return settings
 }
 
 func defaultSettings() *settings {
@@ -66,13 +56,11 @@ func defaultSettings() *settings {
 
 // WithName configures an optional logical cache name.
 //
-// Metrics implementations may use the name to distinguish cache instances.
-// An empty name leaves the cache unnamed.
+// The name can be used to identify the cache in logs, diagnostics, or
+// observability integrations. An empty name leaves the cache unnamed.
 func WithName(name string) Option {
-	return func(settings *settings) error {
+	return func(settings *settings) {
 		settings.name = name
-
-		return nil
 	}
 }
 
@@ -81,16 +69,12 @@ func WithName(name string) Option {
 // With one segment, the full budget is shared by the cache. When multiple
 // segments are configured, the budget is distributed across them and effective
 // capacity utilization may be slightly lower because each segment enforces its
-// own local budget.
+// own local budget. Non-positive values are ignored.
 func WithMaxEntries(maxEntries int) Option {
-	return func(settings *settings) error {
-		if maxEntries <= 0 {
-			return errors.New("max entries must be positive")
+	return func(settings *settings) {
+		if maxEntries > 0 {
+			settings.maxEntries = maxEntries
 		}
-
-		settings.maxEntries = maxEntries
-
-		return nil
 	}
 }
 
@@ -99,32 +83,26 @@ func WithMaxEntries(maxEntries int) Option {
 // The default is one segment. More segments can reduce lock contention under
 // concurrent access but may reduce effective capacity utilization because each
 // segment has its own entry budget. Benchmark segment counts against the
-// application's actual workload.
+// application's actual workload. Non-positive values are ignored. Values above
+// the configured entry budget are clamped to that budget.
 func WithSegmentCount(count int) Option {
-	return func(settings *settings) error {
-		if count <= 0 {
-			return errors.New("segment count must be positive")
+	return func(settings *settings) {
+		if count > 0 {
+			settings.segmentCount = count
 		}
-
-		settings.segmentCount = count
-
-		return nil
 	}
 }
 
 // WithTTL configures the default lifetime of cache entries.
 //
 // A positive TTL enables time-based expiration. NoExpiration disables
-// time-based expiration for entries using the default expiration.
+// time-based expiration for entries using the default expiration. Other
+// non-positive values are ignored.
 func WithTTL(ttl time.Duration) Option {
-	return func(settings *settings) error {
-		if ttl <= 0 && ttl != NoExpiration {
-			return errors.New("ttl must be positive or NoExpiration")
+	return func(settings *settings) {
+		if ttl == NoExpiration || ttl > 0 {
+			settings.ttl = ttl
 		}
-
-		settings.ttl = ttl
-
-		return nil
 	}
 }
 
@@ -133,16 +111,13 @@ func WithTTL(ttl time.Duration) Option {
 // Jitter adds a random duration smaller than the configured value when an
 // expiring entry is stored, reducing synchronized expiration. With sliding
 // expiration, the resulting effective TTL is reused on every refresh instead of
-// selecting another jitter value. Zero disables jitter.
+// selecting another jitter value. Zero disables jitter. Negative values are
+// ignored.
 func WithJitter(jitter time.Duration) Option {
-	return func(settings *settings) error {
-		if jitter < 0 {
-			return errors.New("jitter must not be negative")
+	return func(settings *settings) {
+		if jitter >= 0 {
+			settings.jitter = jitter
 		}
-
-		settings.jitter = jitter
-
-		return nil
 	}
 }
 
@@ -155,10 +130,8 @@ func WithJitter(jitter time.Duration) Option {
 // jitter is selected once when the entry is stored and reused by subsequent
 // refreshes. Entries using NoExpiration are not refreshed.
 func WithSlidingExpiration() Option {
-	return func(settings *settings) error {
+	return func(settings *settings) {
 		settings.slidingExpiration = true
-
-		return nil
 	}
 }
 
@@ -169,16 +142,13 @@ func WithSlidingExpiration() Option {
 // logical TTL precision or the internal expiration bucket resolution.
 //
 // Background cleanup must be started explicitly with StartCleanup. Manual
-// cleanup through Cache.DeleteExpired is always available.
+// cleanup through Cache.DeleteExpired is always available. Non-positive values
+// are ignored.
 func WithCleanupInterval(interval time.Duration) Option {
-	return func(settings *settings) error {
-		if interval <= 0 {
-			return errors.New("cleanup interval must be positive")
+	return func(settings *settings) {
+		if interval > 0 {
+			settings.cleanupInterval = interval
 		}
-
-		settings.cleanupInterval = interval
-
-		return nil
 	}
 }
 
@@ -189,15 +159,12 @@ func WithCleanupInterval(interval time.Duration) Option {
 // can increase cleanup throughput but may hold a segment lock for longer.
 // Values larger than a segment or the remaining cleanup budget are safe and
 // are naturally limited by the available work. The default is 256.
+// Non-positive values are ignored.
 func WithCleanupBatchSize(size int) Option {
-	return func(settings *settings) error {
-		if size <= 0 {
-			return errors.New("cleanup batch size must be positive")
+	return func(settings *settings) {
+		if size > 0 {
+			settings.cleanupBatchSize = size
 		}
-
-		settings.cleanupBatchSize = size
-
-		return nil
 	}
 }
 
@@ -209,39 +176,11 @@ func WithCleanupBatchSize(size int) Option {
 // cleanup is additionally bounded by an internal time budget. Manual cleanup
 // yields cooperatively after exhausting the entry budget and continues until
 // all entries due at the start of the call are drained. Values larger than the
-// cache size are safe. The default is 16384.
+// cache size are safe. The default is 16384. Non-positive values are ignored.
 func WithCleanupEntryBudget(entries int) Option {
-	return func(settings *settings) error {
-		if entries <= 0 {
-			return errors.New("cleanup entry budget must be positive")
+	return func(settings *settings) {
+		if entries > 0 {
+			settings.cleanupEntryBudget = entries
 		}
-
-		settings.cleanupEntryBudget = entries
-
-		return nil
 	}
-}
-
-// WithMetrics configures optional cache metrics.
-//
-// The Metrics implementation may be reused by multiple caches. The cache
-// does not manage the lifecycle of metrics registrations.
-func WithMetrics(metrics Metrics) Option {
-	return func(settings *settings) error {
-		settings.metrics = metrics
-
-		return nil
-	}
-}
-
-func (settings *settings) validate() error {
-	if settings.ttl > 0 && settings.ttl > maxDuration-settings.jitter {
-		return errors.New("ttl plus jitter exceeds maximum duration")
-	}
-
-	if settings.segmentCount > settings.maxEntries {
-		return errors.New("segment count must not exceed max entries")
-	}
-
-	return nil
 }

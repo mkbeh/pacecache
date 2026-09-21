@@ -1,7 +1,6 @@
 package pacecache
 
 import (
-	"errors"
 	"testing"
 	"time"
 )
@@ -15,8 +14,12 @@ func TestDefaultSettings(t *testing.T) {
 	if settings.maxEntries != defaultMaxEntries {
 		t.Fatalf("maxEntries = %d, want %d", settings.maxEntries, defaultMaxEntries)
 	}
-	if settings.segmentCount != 1 {
-		t.Fatalf("segmentCount = %d, want 1", settings.segmentCount)
+	if settings.segmentCount != defaultStorageSegmentCount {
+		t.Fatalf(
+			"segmentCount = %d, want %d",
+			settings.segmentCount,
+			defaultStorageSegmentCount,
+		)
 	}
 	if settings.ttl != defaultTTL {
 		t.Fatalf("ttl = %v, want %v", settings.ttl, defaultTTL)
@@ -40,15 +43,10 @@ func TestDefaultSettings(t *testing.T) {
 	if settings.slidingExpiration {
 		t.Fatal("sliding expiration must be disabled by default")
 	}
-	if settings.metrics != nil {
-		t.Fatal("metrics must be nil by default")
-	}
 }
 
 func TestNewSettingsAppliesOptions(t *testing.T) {
-	metrics := &testMetrics{}
-
-	got, err := newSettings(
+	got := newSettings(
 		WithName("users"),
 		WithMaxEntries(128),
 		WithSegmentCount(8),
@@ -58,11 +56,7 @@ func TestNewSettingsAppliesOptions(t *testing.T) {
 		WithCleanupInterval(time.Second),
 		WithCleanupBatchSize(1024),
 		WithCleanupEntryBudget(64*1024),
-		WithMetrics(metrics),
 	)
-	if err != nil {
-		t.Fatalf("newSettings() error = %v", err)
-	}
 
 	want := settings{
 		name:               "users",
@@ -74,7 +68,6 @@ func TestNewSettingsAppliesOptions(t *testing.T) {
 		cleanupInterval:    time.Second,
 		cleanupBatchSize:   1024,
 		cleanupEntryBudget: 64 * 1024,
-		metrics:            metrics,
 	}
 
 	if *got != want {
@@ -82,74 +75,98 @@ func TestNewSettingsAppliesOptions(t *testing.T) {
 	}
 }
 
-func TestNewSettingsRejectsNilOption(t *testing.T) {
-	_, err := newSettings(nil)
-	const want = "option 0 is nil"
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want %q", err, want)
+func TestNewSettingsIgnoresNilOption(t *testing.T) {
+	got := newSettings(nil)
+	want := defaultSettings()
+
+	if *got != *want {
+		t.Fatalf("newSettings(nil) = %+v, want %+v", *got, *want)
 	}
 }
 
-func TestNewSettingsWrapsOptionError(t *testing.T) {
-	sentinel := errors.New("sentinel")
-	option := func(*settings) error { return sentinel }
+func TestNewSettingsIgnoresInvalidOptionValues(t *testing.T) {
+	settings := newSettings(
+		WithMaxEntries(128),
+		WithMaxEntries(0),
+		WithSegmentCount(8),
+		WithSegmentCount(-1),
+		WithTTL(time.Minute),
+		WithTTL(0),
+		WithJitter(time.Second),
+		WithJitter(-1),
+		WithCleanupInterval(time.Second),
+		WithCleanupInterval(0),
+		WithCleanupBatchSize(1024),
+		WithCleanupBatchSize(0),
+		WithCleanupEntryBudget(4096),
+		WithCleanupEntryBudget(-1),
+	)
 
-	_, err := newSettings(option)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("error = %v, want wrapped sentinel", err)
+	if settings.maxEntries != 128 {
+		t.Fatalf("maxEntries = %d, want 128", settings.maxEntries)
+	}
+	if settings.segmentCount != 8 {
+		t.Fatalf("segmentCount = %d, want 8", settings.segmentCount)
+	}
+	if settings.ttl != time.Minute {
+		t.Fatalf("ttl = %v, want 1m", settings.ttl)
+	}
+	if settings.jitter != time.Second {
+		t.Fatalf("jitter = %v, want 1s", settings.jitter)
+	}
+	if settings.cleanupInterval != time.Second {
+		t.Fatalf("cleanupInterval = %v, want 1s", settings.cleanupInterval)
+	}
+	if settings.cleanupBatchSize != 1024 {
+		t.Fatalf("cleanupBatchSize = %d, want 1024", settings.cleanupBatchSize)
+	}
+	if settings.cleanupEntryBudget != 4096 {
+		t.Fatalf("cleanupEntryBudget = %d, want 4096", settings.cleanupEntryBudget)
 	}
 }
 
-func TestSettingsValidation(t *testing.T) {
+func TestNewSettingsClampsSegmentCountToMaxEntries(t *testing.T) {
 	tests := []struct {
 		name    string
 		options []Option
-		want    string
 	}{
-		{name: "max entries zero", options: []Option{WithMaxEntries(0)}, want: "apply option 0: max entries must be positive"},
-		{name: "max entries negative", options: []Option{WithMaxEntries(-1)}, want: "apply option 0: max entries must be positive"},
-		{name: "segment count zero", options: []Option{WithSegmentCount(0)}, want: "apply option 0: segment count must be positive"},
-		{name: "segment count negative", options: []Option{WithSegmentCount(-1)}, want: "apply option 0: segment count must be positive"},
-		{name: "ttl zero", options: []Option{WithTTL(0)}, want: "apply option 0: ttl must be positive or NoExpiration"},
-		{name: "ttl invalid negative", options: []Option{WithTTL(-2)}, want: "apply option 0: ttl must be positive or NoExpiration"},
-		{name: "negative jitter", options: []Option{WithJitter(-1)}, want: "apply option 0: jitter must not be negative"},
-		{name: "cleanup interval zero", options: []Option{WithCleanupInterval(0)}, want: "apply option 0: cleanup interval must be positive"},
-		{name: "cleanup interval negative", options: []Option{WithCleanupInterval(-1)}, want: "apply option 0: cleanup interval must be positive"},
-		{name: "cleanup batch size zero", options: []Option{WithCleanupBatchSize(0)}, want: "apply option 0: cleanup batch size must be positive"},
-		{name: "cleanup batch size negative", options: []Option{WithCleanupBatchSize(-1)}, want: "apply option 0: cleanup batch size must be positive"},
-		{name: "cleanup entry budget zero", options: []Option{WithCleanupEntryBudget(0)}, want: "apply option 0: cleanup entry budget must be positive"},
-		{name: "cleanup entry budget negative", options: []Option{WithCleanupEntryBudget(-1)}, want: "apply option 0: cleanup entry budget must be positive"},
-		{name: "segments exceed max entries", options: []Option{WithMaxEntries(2), WithSegmentCount(3)}, want: "invalid configuration: segment count must not exceed max entries"},
 		{
-			name: "ttl plus jitter overflow",
+			name: "max entries first",
 			options: []Option{
-				WithTTL(maxDuration),
-				WithJitter(time.Nanosecond),
+				WithMaxEntries(2),
+				WithSegmentCount(3),
 			},
-			want: "invalid configuration: ttl plus jitter exceeds maximum duration",
+		},
+		{
+			name: "segment count first",
+			options: []Option{
+				WithSegmentCount(3),
+				WithMaxEntries(2),
+			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := newSettings(test.options...)
-			if err == nil || err.Error() != test.want {
-				t.Fatalf("error = %v, want %q", err, test.want)
+			settings := newSettings(test.options...)
+			if settings.maxEntries != 2 || settings.segmentCount != 2 {
+				t.Fatalf(
+					"settings = maxEntries:%d segmentCount:%d, want 2/2",
+					settings.maxEntries,
+					settings.segmentCount,
+				)
 			}
 		})
 	}
 }
 
 func TestSettingsAcceptsIndependentCleanupLimits(t *testing.T) {
-	settings, err := newSettings(
+	settings := newSettings(
 		WithMaxEntries(4),
 		WithSegmentCount(1),
 		WithCleanupBatchSize(10_000),
 		WithCleanupEntryBudget(3),
 	)
-	if err != nil {
-		t.Fatalf("newSettings() error = %v", err)
-	}
 
 	if settings.cleanupBatchSize != 10_000 || settings.cleanupEntryBudget != 3 {
 		t.Fatalf("cleanup limits = %d/%d, want 10000/3", settings.cleanupBatchSize, settings.cleanupEntryBudget)
@@ -157,16 +174,12 @@ func TestSettingsAcceptsIndependentCleanupLimits(t *testing.T) {
 }
 
 func TestSettingsAcceptsBoundaryValues(t *testing.T) {
-	settings, err := newSettings(
+	settings := newSettings(
 		WithName(""),
 		WithMaxEntries(1),
 		WithTTL(NoExpiration),
 		WithJitter(maxDuration),
-		WithMetrics(nil),
 	)
-	if err != nil {
-		t.Fatalf("newSettings() error = %v", err)
-	}
 
 	if settings.name != "" {
 		t.Fatalf("name = %q, want empty", settings.name)
@@ -174,7 +187,21 @@ func TestSettingsAcceptsBoundaryValues(t *testing.T) {
 	if settings.ttl != NoExpiration {
 		t.Fatalf("ttl = %v, want NoExpiration", settings.ttl)
 	}
-	if settings.metrics != nil {
-		t.Fatal("metrics must remain nil")
+	if settings.jitter != maxDuration {
+		t.Fatalf("jitter = %v, want maxDuration", settings.jitter)
+	}
+}
+
+func TestNewSettingsAcceptsMaximumTTLAndJitter(t *testing.T) {
+	settings := newSettings(
+		WithTTL(maxDuration),
+		WithJitter(maxDuration),
+	)
+
+	if settings.ttl != maxDuration {
+		t.Fatalf("ttl = %v, want maxDuration", settings.ttl)
+	}
+	if settings.jitter != maxDuration {
+		t.Fatalf("jitter = %v, want maxDuration", settings.jitter)
 	}
 }

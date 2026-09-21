@@ -17,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
+var _ Source = (*pacecache.Cache[string, int])(nil)
+
 type metricsSourceStub struct {
 	name    string
 	stats   pacecache.Stats

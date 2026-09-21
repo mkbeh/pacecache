@@ -1,7 +1,7 @@
 package pacecache
 
 import (
-	"fmt"
+	"math"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -15,6 +15,8 @@ const (
 	NoExpiration time.Duration = -1
 )
 
+const maxDuration = time.Duration(math.MaxInt64)
+
 // Cache is a bounded in-process cache for keys of type K and values of type V.
 //
 // Cache uses exact LRU eviction within each storage segment and TTL expiration.
@@ -25,6 +27,7 @@ const (
 // Cache is safe for concurrent use. A Cache must not be copied after creation.
 type Cache[K comparable, V any] struct {
 	loader Loader[K, V]
+	name   string
 
 	store  *storage[K, V]
 	states []cacheState[K, V]
@@ -44,40 +47,32 @@ type Cache[K comparable, V any] struct {
 //
 // Unless overridden by options, New uses the default cache capacity, a single
 // storage segment, and no time-based expiration. No default loader is
-// configured. Metrics are disabled by default, and background cleanup is not
-// started automatically.
+// configured. Background cleanup is not started automatically.
 func New[K comparable, V any](
 	options ...Option,
-) (*Cache[K, V], error) {
+) *Cache[K, V] {
 	return newCache[K, V](nil, options...)
 }
 
-// NewWithDefaultLoader creates a Cache with the given default loader.
+// NewWithLoader creates a Cache with the given default loader.
 //
 // The loader is used by GetOrLoad and GetOrLoadEntry when no live cache entry
 // exists. Per-call loaders may be supplied through GetOrLoadFunc and
-// GetOrLoadEntryFunc. Loader must not be nil.
+// GetOrLoadEntryFunc. A nil loader leaves the cache without a default loader.
 //
-// Options, metrics, and background cleanup have the same semantics as New.
-func NewWithDefaultLoader[K comparable, V any](
+// Options and background cleanup have the same semantics as New.
+func NewWithLoader[K comparable, V any](
 	loader Loader[K, V],
 	options ...Option,
-) (*Cache[K, V], error) {
-	if loader == nil {
-		return nil, ErrNoLoader
-	}
-
-	return newCache[K, V](loader, options...)
+) *Cache[K, V] {
+	return newCache(loader, options...)
 }
 
 func newCache[K comparable, V any](
 	loader Loader[K, V],
 	options ...Option,
-) (*Cache[K, V], error) {
-	settings, err := newSettings(options...)
-	if err != nil {
-		return nil, fmt.Errorf("pacecache: %w", err)
-	}
+) *Cache[K, V] {
+	settings := newSettings(options...)
 
 	store := newStorage[K, V](
 		settings.maxEntries,
@@ -85,8 +80,9 @@ func newCache[K comparable, V any](
 		settings.slidingExpiration,
 	)
 
-	cache := &Cache[K, V]{
+	return &Cache[K, V]{
 		loader: loader,
+		name:   settings.name,
 
 		store:  store,
 		states: make([]cacheState[K, V], len(store.segments)),
@@ -101,12 +97,17 @@ func newCache[K comparable, V any](
 		},
 		cleanupInterval: settings.cleanupInterval,
 	}
+}
 
-	if err := cache.registerMetrics(settings.name, settings.metrics); err != nil {
-		return nil, fmt.Errorf("pacecache: register metrics: %w", err)
+// Name returns the optional logical name assigned to the cache.
+//
+// An unnamed, nil, or zero-value Cache returns an empty string.
+func (cache *Cache[K, V]) Name() string {
+	if cache == nil {
+		return ""
 	}
 
-	return cache, nil
+	return cache.name
 }
 
 // StartCleanup runs periodic expiration cleanup until StopCleanup is called.
@@ -168,19 +169,6 @@ func (cache *Cache[K, V]) effectiveTTL(expiration time.Duration) time.Duration {
 	}
 
 	return jitteredTTL(ttl, cache.jitter)
-}
-
-func (cache *Cache[K, V]) registerMetrics(name string, metrics Metrics) error {
-	if metrics == nil {
-		return nil
-	}
-
-	return metrics.Register(
-		metricsSource[K, V]{
-			name:  name,
-			cache: cache,
-		},
-	)
 }
 
 func (cache *Cache[K, V]) initialized() bool {

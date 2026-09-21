@@ -8,7 +8,7 @@ OpenTelemetry SDK exporter without changing the cache integration.
 ## Key Concepts Covered
 
 * Configuring OpenTelemetry with a custom `MeterProvider`
-* Attaching `paceotel` to a cache through `pacecache.WithMetrics`
+* Registering a cache explicitly with `paceotel`
 * Observing hits, misses, loader outcomes, and deletions
 * Handling not-found loader results without caching them
 * Flushing telemetry before a short-lived process exits

@@ -131,14 +131,10 @@ func newThroughputCache(
 	b.Helper()
 
 	for range throughputPopulationAttempts {
-		cache, err := pacecache.New[string, string](
+		cache := pacecache.New[string, string](
 			pacecache.WithMaxEntries(maxEntries),
 			pacecache.WithSegmentCount(throughputSegments),
 		)
-		if err != nil {
-			b.Fatalf("create cache: %v", err)
-		}
-
 		for index, key := range data.keys {
 			cache.Set(
 				key,
