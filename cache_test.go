@@ -11,6 +11,9 @@ import (
 func TestNilCacheIsSafe(t *testing.T) {
 	var cache *Cache[string, int]
 
+	if cache.Name() != "" {
+		t.Fatalf("nil Cache.Name() = %q, want empty", cache.Name())
+	}
 	if cache.Exists("key") {
 		t.Fatal("nil Cache.Exists() = true, want false")
 	}
@@ -34,6 +37,9 @@ func TestNilCacheIsSafe(t *testing.T) {
 func TestZeroValueCacheIsSafe(t *testing.T) {
 	var cache Cache[string, int]
 
+	if cache.Name() != "" {
+		t.Fatalf("zero Cache.Name() = %q, want empty", cache.Name())
+	}
 	if cache.Exists("key") || cache.RefreshTTL("key") {
 		t.Fatal("zero Cache unexpectedly reports a live key")
 	}
@@ -116,6 +122,18 @@ func TestEffectiveTTLAndDeadlineHelpers(t *testing.T) {
 	}
 	if got := jitteredTTL(maxDuration, time.Second); got != maxDuration {
 		t.Fatalf("jitteredTTL at max duration = %v, want maxDuration", got)
+	}
+}
+
+func TestCacheName(t *testing.T) {
+	named := mustNewCache[int](t, WithName("users"))
+	if got := named.Name(); got != "users" {
+		t.Fatalf("Name() = %q, want users", got)
+	}
+
+	unnamed := mustNewCache[int](t)
+	if got := unnamed.Name(); got != "" {
+		t.Fatalf("unnamed Name() = %q, want empty", got)
 	}
 }
 

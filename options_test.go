@@ -40,14 +40,9 @@ func TestDefaultSettings(t *testing.T) {
 	if settings.slidingExpiration {
 		t.Fatal("sliding expiration must be disabled by default")
 	}
-	if settings.metrics != nil {
-		t.Fatal("metrics must be nil by default")
-	}
 }
 
 func TestNewSettingsAppliesOptions(t *testing.T) {
-	metrics := &testMetrics{}
-
 	got, err := newSettings(
 		WithName("users"),
 		WithMaxEntries(128),
@@ -58,7 +53,6 @@ func TestNewSettingsAppliesOptions(t *testing.T) {
 		WithCleanupInterval(time.Second),
 		WithCleanupBatchSize(1024),
 		WithCleanupEntryBudget(64*1024),
-		WithMetrics(metrics),
 	)
 	if err != nil {
 		t.Fatalf("newSettings() error = %v", err)
@@ -74,7 +68,6 @@ func TestNewSettingsAppliesOptions(t *testing.T) {
 		cleanupInterval:    time.Second,
 		cleanupBatchSize:   1024,
 		cleanupEntryBudget: 64 * 1024,
-		metrics:            metrics,
 	}
 
 	if *got != want {
@@ -162,7 +155,6 @@ func TestSettingsAcceptsBoundaryValues(t *testing.T) {
 		WithMaxEntries(1),
 		WithTTL(NoExpiration),
 		WithJitter(maxDuration),
-		WithMetrics(nil),
 	)
 	if err != nil {
 		t.Fatalf("newSettings() error = %v", err)
@@ -173,8 +165,5 @@ func TestSettingsAcceptsBoundaryValues(t *testing.T) {
 	}
 	if settings.ttl != NoExpiration {
 		t.Fatalf("ttl = %v, want NoExpiration", settings.ttl)
-	}
-	if settings.metrics != nil {
-		t.Fatal("metrics must remain nil")
 	}
 }

@@ -225,9 +225,9 @@ _ = stats.ClearedEntryCount // Entries removed by full cache clears
 Statistics also include load outcomes, shared and superseded loads, deleted and cleared entry counts, cleanup activity,
 and segment count.
 
-Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel). OpenTelemetry configuration and
-exporter selection remain application concerns, so Prometheus, OTLP, and other exporters can be used without changing
-the cache integration.
+Optional OpenTelemetry metrics are available through [paceotel](./extra/paceotel) and are registered explicitly for
+each cache. OpenTelemetry configuration and exporter selection remain application concerns, so Prometheus, OTLP, and
+other exporters can be used without changing the cache integration.
 
 For a complete setup, see the [example](./examples/otel).
 

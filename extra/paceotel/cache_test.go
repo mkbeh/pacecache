@@ -310,6 +310,77 @@ func TestMetricsCollectsSource(t *testing.T) {
 	)
 }
 
+func TestMetricsRegisterAttributes(t *testing.T) {
+	metrics, reader := newTestMetrics(t)
+
+	if err := metrics.Register(
+		&metricsSourceStub{
+			name: "users",
+			stats: pacecache.Stats{
+				EntryCount: 3,
+				HitCount:   11,
+			},
+		},
+		attribute.String("pacecache.shard", "0"),
+	); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	collected := collectMetricsByName(t, collectTestMetrics(t, reader))
+
+	requireInt64GaugePoint(
+		t,
+		collected,
+		wantEntryCountMetricName,
+		map[string]string{
+			wantCacheNameAttribute: "users",
+			"pacecache.shard":      "0",
+		},
+		3,
+	)
+	requireInt64CounterPoint(
+		t,
+		collected,
+		wantLookupCountMetricName,
+		map[string]string{
+			wantCacheNameAttribute:    "users",
+			wantLookupResultAttribute: "hit",
+			"pacecache.shard":         "0",
+		},
+		11,
+	)
+}
+
+func TestMetricsRegisterAttributesLibraryValuesWin(t *testing.T) {
+	metrics, reader := newTestMetrics(t)
+
+	if err := metrics.Register(
+		&metricsSourceStub{
+			name: "users",
+			stats: pacecache.Stats{
+				HitCount: 11,
+			},
+		},
+		attribute.String(cacheNameAttribute, "overridden"),
+		attribute.String(lookupResultAttribute, "overridden"),
+	); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	collected := collectMetricsByName(t, collectTestMetrics(t, reader))
+
+	requireInt64CounterPoint(
+		t,
+		collected,
+		wantLookupCountMetricName,
+		map[string]string{
+			wantCacheNameAttribute:    "users",
+			wantLookupResultAttribute: "hit",
+		},
+		11,
+	)
+}
+
 func TestMetricsCollectsMultipleSources(t *testing.T) {
 	metrics, reader := newTestMetrics(t)
 

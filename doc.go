@@ -13,9 +13,10 @@
 // Cache mutations act as publication barriers for concurrent loads, preventing
 // superseded loader results from overwriting newer cache state.
 //
+// Cache.Name exposes an optional logical cache name configured with WithName.
 // Cache statistics are collected locally and exposed through Cache.Stats.
-// Optional metrics integrations register when a cache is created and observe
-// those snapshots without adding telemetry calls to the cache request path.
+// Observability integrations can use both without adding telemetry calls to
+// the cache request path.
 //
 // The cache is local to one application process. It does not provide
 // distributed cache coherence between application instances.

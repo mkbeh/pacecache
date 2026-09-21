@@ -29,8 +29,6 @@ type settings struct {
 	cleanupInterval    time.Duration
 	cleanupBatchSize   int
 	cleanupEntryBudget int
-
-	metrics Metrics
 }
 
 func newSettings(options ...Option) (*settings, error) {
@@ -66,8 +64,8 @@ func defaultSettings() *settings {
 
 // WithName configures an optional logical cache name.
 //
-// Metrics implementations may use the name to distinguish cache instances.
-// An empty name leaves the cache unnamed.
+// The name can be used to identify the cache in logs, diagnostics, or
+// observability integrations. An empty name leaves the cache unnamed.
 func WithName(name string) Option {
 	return func(settings *settings) error {
 		settings.name = name
@@ -217,18 +215,6 @@ func WithCleanupEntryBudget(entries int) Option {
 		}
 
 		settings.cleanupEntryBudget = entries
-
-		return nil
-	}
-}
-
-// WithMetrics configures optional cache metrics.
-//
-// The Metrics implementation may be reused by multiple caches. The cache
-// does not manage the lifecycle of metrics registrations.
-func WithMetrics(metrics Metrics) Option {
-	return func(settings *settings) error {
-		settings.metrics = metrics
 
 		return nil
 	}

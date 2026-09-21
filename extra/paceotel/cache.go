@@ -405,8 +405,8 @@ func newMetricInstruments(meter metric.Meter) (metricInstruments, error) {
 	return instruments, nil
 }
 
-func newMetricAttributes(name string) metricAttributes {
-	var base []attribute.KeyValue
+func newMetricAttributes(name string, attributes ...attribute.KeyValue) metricAttributes {
+	base := slices.Clone(attributes)
 
 	if name != "" {
 		base = append(
@@ -418,7 +418,8 @@ func newMetricAttributes(name string) metricAttributes {
 	option := func(extra ...attribute.KeyValue) metric.ObserveOption {
 		return metric.WithAttributeSet(
 			attribute.NewSet(
-				slices.Concat(base, extra)...),
+				slices.Concat(base, extra)...,
+			),
 		)
 	}
 
