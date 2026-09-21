@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/mkbeh/pacecache v1.3.0
+	github.com/mkbeh/pacecache v1.4.0
 	github.com/pingcap/go-ycsb v1.0.3
 	gonum.org/v1/plot v0.17.0
 )
@@ -24,6 +24,6 @@ require (
 	github.com/stretchr/testify v1.12.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/image v0.45.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 )
