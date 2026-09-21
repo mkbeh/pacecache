@@ -111,13 +111,7 @@ loader := pacecache.Loader[string, string](func(ctx context.Context, key string)
 
 // Return the cached value or invoke the loader on a miss.
 value, found, err := cache.GetOrLoadFunc(ctx, "key", loader)
-if err != nil {
-    panic(err)
-}
-
-if found {
-    fmt.Println("retrieved value:", value) // loaded key
-}
+fmt.Println("retrieved value:", value) // loaded value
 ```
 <!-- @formatter:on -->
 
@@ -135,13 +129,7 @@ cache := pacecache.NewWithLoader[string, string](
 
 // Return the cached value or invoke the configured loader on a miss.
 value, found, err := cache.GetOrLoad(ctx, "key")
-if err != nil {
-    panic(err)
-}
-
-if found {
-    fmt.Println("retrieved value:", value) // loaded key
-}
+fmt.Println("retrieved value:", value) // loaded value
 ```
 <!-- @formatter:on -->
 
