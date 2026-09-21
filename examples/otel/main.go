@@ -69,7 +69,6 @@ func run(ctx context.Context) error {
 	users := pacecache.NewWithLoader[int64, user](
 		repository.find,
 		pacecache.WithName("users"),
-		pacecache.WithMaxEntries(128),
 		pacecache.WithTTL(time.Minute),
 	)
 
